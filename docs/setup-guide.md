@@ -287,23 +287,15 @@ Remove-Item -Recurse "$env:USERPROFILE\.claumon"   # 連同歷史資料一併刪
 
 ---
 
-## 附錄：一鍵安裝腳本（步驟 1、3、4）
+## 附錄：一鍵安裝腳本
 
-> 仍須**手動完成步驟 2 的 `claude` 登入**，額度儀表才有資料。
+本專案已將上述步驟封裝成 [`scripts/install.ps1`](../scripts/install.ps1)，會自動完成
+「安裝 Claude Code CLI → 下載 claumon → 設定背景服務 → 安裝本工具」：
 
 ```powershell
-# 1. Claude Code CLI
-winget install --id Anthropic.ClaudeCode --accept-source-agreements --accept-package-agreements -e
-
-# 3. 下載 claumon
-$dir = "$env:LOCALAPPDATA\Programs\claumon"
-New-Item -ItemType Directory -Force $dir | Out-Null
-$exe = "$dir\claumon.exe"
-Invoke-WebRequest -Uri "https://github.com/fabioconcina/claumon/releases/latest/download/claumon-windows-amd64.exe" -OutFile $exe
-Unblock-File $exe
-$p = [Environment]::GetEnvironmentVariable('Path','User')
-if ($p -notlike "*claumon*") { [Environment]::SetEnvironmentVariable('Path', "$p;$dir", 'User') }
-
-# 4. 安裝背景服務（請先在「新的」PowerShell 視窗執行，使 PATH 生效）
-claumon service install
+# 於專案根目錄
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
+
+> 仍須**手動完成 `claude` 登入**（步驟 2，瀏覽器授權），額度儀表才有資料；腳本結束時會提示。
+> 可用 `-SkipClaudeCode` / `-SkipClaumon` / `-SkipTool` 略過個別步驟。

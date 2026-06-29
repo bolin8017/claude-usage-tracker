@@ -20,8 +20,8 @@ classifiers = [
 dependencies = ["matplotlib>=3.5"]
 
 [project.urls]
-"Homepage" = "https://github.com/your-org/claude-usage-tracker"
-"Issues" = "https://github.com/your-org/claude-usage-tracker/issues"
+"Homepage" = "https://github.com/bolin8017/claude-usage-tracker"
+"Issues" = "https://github.com/bolin8017/claude-usage-tracker/issues"
 
 [project.scripts]
 claude-usage = "claude_usage_tracker.cli:main"
