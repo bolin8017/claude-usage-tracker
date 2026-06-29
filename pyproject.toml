@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-usage-tracker"
+version = "0.1.0"
+description = "Export and visualize Claude (Pro/Max) usage from a claumon SQLite database."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Polin Lai" }]
+keywords = ["claude", "claumon", "usage", "monitoring", "anthropic", "rate-limit"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Utilities",
+]
+dependencies = ["matplotlib>=3.5"]
+
+[project.urls]
+"Homepage" = "https://github.com/your-org/claude-usage-tracker"
+"Issues" = "https://github.com/your-org/claude-usage-tracker/issues"
+
+[project.scripts]
+claude-usage = "claude_usage_tracker.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
