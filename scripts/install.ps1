@@ -115,12 +115,24 @@ if (-not (Get-Process -Name claumon -ErrorAction SilentlyContinue)) {
 }
 '@ | Set-Content -Path $watchdog -Encoding UTF8
 
+    # 以 VBS 包一層：排程若直接起 powershell.exe，每次都會閃一下 conhost 視窗
+    # （-WindowStyle Hidden 是啟動「後」才隱藏）。改由 wscript(GUI、無主控台) 以視窗
+    # 模式 0 啟動 powershell → 完全不閃窗。
+    $vbs = "$dir\claumon-watchdog.vbs"
+    @'
+' Launch the claumon watchdog fully hidden (no console window flash).
+Dim fso, ps1
+Set fso = CreateObject("Scripting.FileSystemObject")
+ps1 = fso.BuildPath(fso.GetParentFolderName(WScript.ScriptFullName), "claumon-watchdog.ps1")
+CreateObject("WScript.Shell").Run _
+  "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File """ & ps1 & """", 0, False
+'@ | Set-Content -Path $vbs -Encoding ASCII
+
     # 註冊/更新排程任務（idempotent；-Force 覆寫既有）
     # 用目前登入身分的完整名稱：在 Entra/AzureAD 加入的機器會是 AzureAD\user，
     # 直接拼 "$env:USERDOMAIN\$env:USERNAME" 會解析失敗導致 Register-ScheduledTask 丟例外。
     $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-        -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watchdog`""
+    $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //Nologo `"$vbs`""
     $trigLogon = New-ScheduledTaskTrigger -AtLogOn -User $me
     $trigTick  = New-ScheduledTaskTrigger -Once -At (Get-Date) `
         -RepetitionInterval (New-TimeSpan -Minutes 3) -RepetitionDuration (New-TimeSpan -Days 3650)
