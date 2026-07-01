@@ -32,6 +32,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$claumonBgOk = $false   # 背景常駐排程是否註冊成功（完成提示會據此如實顯示）
 
 function Write-Step($n, $msg) { Write-Host "`n=== [$n] $msg ===" -ForegroundColor Cyan }
 function Test-Cmd($name) { [bool](Get-Command $name -ErrorAction SilentlyContinue) }
@@ -56,6 +57,11 @@ if (-not $SkipClaudeCode) {
         } finally {
             $ErrorActionPreference = $prevEAP
         }
+        # 官方安裝腳本改的是登錄檔 PATH；同步到本行程後再確認是否真的裝好（iex 不丟例外時也能抓到失敗）
+        $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+        if (-not (Test-Cmd "claude")) {
+            Write-Warning "安裝後偵測不到 claude 指令，可能未安裝成功或需重開終端機；可稍後手動執行：irm https://claude.ai/install.ps1 | iex"
+        }
     }
 } else { Write-Step 1 "略過 Claude Code CLI" }
 
@@ -64,16 +70,24 @@ if (-not $SkipClaumon) {
     Write-Step 2 "下載 claumon binary"
     $dir = "$env:LOCALAPPDATA\Programs\claumon"
     $exe = "$dir\claumon.exe"
+    $taskName = "ClaumonWatchdog"
     New-Item -ItemType Directory -Force $dir | Out-Null
-    # 重跑安裝時 watchdog 可能已把 claumon 拉起，先停掉以免 binary 被鎖無法覆寫
+    # 重跑安裝時 watchdog 可能已把 claumon 拉起：先停排程(避免下載途中又被重啟並鎖住 binary)，再結束程序
+    Disable-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null
     Stop-Process -Name claumon -Force -ErrorAction SilentlyContinue
+    # 下載到暫存檔，確認完整(非空、夠大)後才覆蓋，避免中途失敗留下半截/損毀的 claumon.exe
     $url = "https://github.com/fabioconcina/claumon/releases/latest/download/claumon-windows-amd64.exe"
+    $tmp = "$exe.download"
     try {
-        Invoke-WebRequest -Uri $url -OutFile $exe
-        Unblock-File $exe
+        Invoke-WebRequest -Uri $url -OutFile $tmp
+        if ((Get-Item $tmp).Length -lt 1MB) { throw "下載檔案過小（$((Get-Item $tmp).Length) bytes），可能不完整" }
+        Unblock-File $tmp
+        Move-Item -Force $tmp $exe
+        Write-Host "claumon binary 已更新：$exe"
     } catch {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
         if (Test-Path $exe) {
-            Write-Warning "下載新版失敗（$($_.Exception.Message)），沿用現有 binary：$exe"
+            Write-Warning "下載失敗（$($_.Exception.Message)），沿用現有 binary：$exe"
         } else { throw }
     }
     $p = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -81,7 +95,6 @@ if (-not $SkipClaumon) {
         [Environment]::SetEnvironmentVariable('Path', "$p;$dir", 'User')
         Write-Host "已加入使用者 PATH：$dir"
     }
-    Write-Host "claumon 安裝於 $exe"
 
     Write-Step 3 "設定 claumon 背景常駐（開機啟動 + 自動重啟）"
     # claumon 官方 service 只是把 claumon.vbs 放進 Startup：僅登入時啟動，被殺掉不會自己回來，
@@ -103,8 +116,9 @@ if (-not (Get-Process -Name claumon -ErrorAction SilentlyContinue)) {
 '@ | Set-Content -Path $watchdog -Encoding UTF8
 
     # 註冊/更新排程任務（idempotent；-Force 覆寫既有）
-    $taskName = "ClaumonWatchdog"
-    $me = "$env:USERDOMAIN\$env:USERNAME"
+    # 用目前登入身分的完整名稱：在 Entra/AzureAD 加入的機器會是 AzureAD\user，
+    # 直接拼 "$env:USERDOMAIN\$env:USERNAME" 會解析失敗導致 Register-ScheduledTask 丟例外。
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     $action = New-ScheduledTaskAction -Execute "powershell.exe" `
         -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watchdog`""
     $trigLogon = New-ScheduledTaskTrigger -AtLogOn -User $me
@@ -117,13 +131,15 @@ if (-not (Get-Process -Name claumon -ErrorAction SilentlyContinue)) {
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigLogon, $trigTick `
             -Settings $settings -Principal $principal `
             -Description "Keep claumon running: start at logon + auto-restart every 3 min (no admin)." -Force | Out-Null
+        $claumonBgOk = $true
         Write-Host "已建立背景常駐排程：$taskName（登入啟動 + 每 3 分鐘自動重啟）"
     } catch {
-        Write-Warning "排程任務註冊失敗：$($_.Exception.Message)"
+        Write-Warning "排程任務註冊失敗（claumon 不會開機自動啟動/自動重啟）：$($_.Exception.Message)"
     }
 
-    # 立即啟動一次，不必等到下次心跳/登入
-    try { Start-ScheduledTask -TaskName $taskName } catch { Start-Process -FilePath $exe -WindowStyle Hidden }
+    # 立即啟動一次，不必等到下次心跳/登入（失敗不致中止安裝）
+    try { Start-ScheduledTask -TaskName $taskName -ErrorAction Stop }
+    catch { Start-Process -FilePath $exe -WindowStyle Hidden -ErrorAction SilentlyContinue }
 } else { Write-Step 2 "略過 claumon" }
 
 # 4. 本工具 ------------------------------------------------------------------
@@ -137,6 +153,23 @@ if (-not $SkipTool) {
 } else { Write-Step 4 "略過本工具" }
 
 # 完成提示 -------------------------------------------------------------------
+if ($SkipClaumon) {
+    $bgSection = "  背景常駐：本次以 -SkipClaumon 略過 claumon。"
+} elseif ($claumonBgOk) {
+    $bgSection = @"
+  背景常駐（已設定，免系統管理員）：
+     claumon 由排程任務 ClaumonWatchdog 看守 —— 登入即啟動、背景隱藏，被關掉最多 3 分鐘自動拉回。
+     確認運行：Get-Process claumon              # 或直接開 http://localhost:3131
+     想停用：  Unregister-ScheduledTask -TaskName ClaumonWatchdog -Confirm:`$false
+"@
+} else {
+    $bgSection = @"
+  背景常駐（！未設定成功，請留意）：
+     排程任務 ClaumonWatchdog 未建立（可能被群組原則封鎖或權限不足），claumon 不會開機自動啟動或自動重啟。
+     可重跑本腳本；或每次登入後手動啟動：Start-Process claumon -WindowStyle Hidden
+"@
+}
+
 Write-Host "`n----------------------------------------------------------" -ForegroundColor Green
 Write-Host "安裝流程完成。還有一個手動步驟：" -ForegroundColor Green
 Write-Host @"
@@ -146,12 +179,9 @@ Write-Host @"
      claude
 
      首次啟動依指示完成登入後，claumon 最多 2 分鐘內會開始抓額度。
-     要立即生效：Stop-Process -Name claumon -Force; Start-ScheduledTask ClaumonWatchdog
+     要立即生效：Stop-Process -Name claumon -Force -ErrorAction SilentlyContinue; Start-Process claumon -WindowStyle Hidden
 
-  背景常駐（已設定，免系統管理員）：
-     claumon 由排程任務 ClaumonWatchdog 看守 —— 登入即啟動、背景隱藏，被關掉最多 3 分鐘自動拉回。
-     確認運行：Get-Process claumon              # 或直接開 http://localhost:3131
-     想停用：  Unregister-ScheduledTask -TaskName ClaumonWatchdog -Confirm:`$false
+$bgSection
 
   之後查看與匯出：
      開啟 http://localhost:3131            # claumon dashboard

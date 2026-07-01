@@ -132,14 +132,15 @@ if (-not (Get-Process -Name claumon -ErrorAction SilentlyContinue)) {
 '@ | Set-Content -Path $watchdog -Encoding UTF8
 
 # 2) 註冊排程任務（登入啟動 + 每 3 分鐘自動重啟；免系統管理員）
-$me = "$env:USERDOMAIN\$env:USERNAME"
+# 用目前登入身分的完整名稱（Entra/AzureAD 加入的機器是 AzureAD\user，拼 USERDOMAIN\USERNAME 會解析失敗）
+$me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
     -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watchdog`""
 $trigLogon = New-ScheduledTaskTrigger -AtLogOn -User $me
 $trigTick  = New-ScheduledTaskTrigger -Once -At (Get-Date) `
     -RepetitionInterval (New-TimeSpan -Minutes 3) -RepetitionDuration (New-TimeSpan -Days 3650)
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 $principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName "ClaumonWatchdog" -Action $action -Trigger $trigLogon,$trigTick `
     -Settings $settings -Principal $principal -Force | Out-Null
@@ -184,9 +185,9 @@ netstat -ano | Select-String ":3131"          # 應看到 LISTENING
 | --- | --- |
 | `Get-Process claumon` | 查看 claumon 是否運行（或開 http://localhost:3131） |
 | `Get-ScheduledTask ClaumonWatchdog \| Select TaskName,State` | 查看 watchdog 排程狀態 |
-| `Stop-Process -Name claumon -Force; Start-ScheduledTask ClaumonWatchdog` | 重啟（改設定或剛登入後立即重抓額度） |
+| `Stop-Process -Name claumon -Force -ErrorAction SilentlyContinue; Start-Process claumon -WindowStyle Hidden` | 重啟（改設定或剛登入後立即重抓額度；不依賴排程） |
 | `Unregister-ScheduledTask -TaskName ClaumonWatchdog -Confirm:$false` | 停用背景常駐（移除 watchdog 排程） |
-| `claumon update` | 檢查並更新 claumon 至最新版 |
+| `Disable-ScheduledTask ClaumonWatchdog; Stop-Process -Name claumon -Force; claumon update` | 更新 claumon（先停排程與程序，否則 watchdog 會鎖住執行檔；更新後重跑一鍵腳本或 `Enable-ScheduledTask ClaumonWatchdog`） |
 
 ### 設定檔（選用）
 
@@ -288,7 +289,7 @@ Copy-Item "$env:LOCALAPPDATA\Programs\claumon\claumon.exe" "$env:TEMP\claumon-te
 **檢查順序**：
 
 1. 憑證是否存在：`Test-Path "$env:USERPROFILE\.claude\.credentials.json"`
-2. 若剛登入，重啟 claumon 以立即重抓：`Stop-Process -Name claumon -Force; Start-ScheduledTask ClaumonWatchdog`
+2. 若剛登入，重啟 claumon 以立即重抓：`Stop-Process -Name claumon -Force -ErrorAction SilentlyContinue; Start-Process claumon -WindowStyle Hidden`
 3. 等待一個輪詢週期（預設 2 分鐘）後再看 `/api/usage`。
 
 > 註：若該機器只用 Cursor 而未使用 Claude Code CLI，額度仍可顯示（usage API 為帳號層級），但本機 session/token 明細會是空的。
