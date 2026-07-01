@@ -318,17 +318,30 @@ Get-Command claumon -ErrorAction SilentlyContinue
 
 ## 8. 移除
 
-```powershell
-# 停用背景常駐（移除 watchdog 排程與腳本）
-Unregister-ScheduledTask -TaskName ClaumonWatchdog -Confirm:$false -ErrorAction SilentlyContinue
-Remove-Item "$env:LOCALAPPDATA\Programs\claumon\claumon-watchdog.ps1" -Force -ErrorAction SilentlyContinue
-Remove-Item "$env:LOCALAPPDATA\Programs\claumon\claumon-watchdog.vbs" -Force -ErrorAction SilentlyContinue
-try { & "$env:LOCALAPPDATA\Programs\claumon\claumon.exe" service uninstall | Out-Null } catch {}  # 清掉舊版官方 Startup(vbs)（若有）
-Stop-Process -Name claumon -Force -ErrorAction SilentlyContinue
+一鍵移除 claumon 與本工具（**保留 Claude Code CLI**）：
 
-Remove-Item (Get-Command claumon).Source -ErrorAction SilentlyContinue
-Remove-Item -Recurse "$env:USERPROFILE\.claumon"   # 連同歷史資料一併刪除（選用）
+```powershell
+# 完整移除（保留歷史資料 ~/.claumon）
+powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
+
+# 只停掉背景常駐與一直跳的封鎖通知，不移除任何檔案
+powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1 -StopOnly
+
+# 連同歷史資料一併刪除
+powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1 -PurgeData
 ```
+
+腳本會移除 watchdog 排程、開機啟動與 claumon binary、從使用者 PATH 移除、並 pip uninstall
+本工具；**刻意不執行 `claumon.exe`**（在被防毒封鎖的機器上執行會再次觸發偵測），也不更動 Claude Code。
+
+> 沒有 repo 在手邊時的手動對應動作（同樣不執行 claumon.exe）：
+> ```powershell
+> Unregister-ScheduledTask -TaskName ClaumonWatchdog -Confirm:$false -ErrorAction SilentlyContinue
+> Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\claumon.vbs" -Force -ErrorAction SilentlyContinue
+> Stop-Process -Name claumon -Force -ErrorAction SilentlyContinue
+> Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\claumon" -ErrorAction SilentlyContinue
+> # 選用：連同歷史資料 Remove-Item -Recurse "$env:USERPROFILE\.claumon"
+> ```
 
 ---
 

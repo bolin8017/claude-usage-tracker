@@ -50,6 +50,15 @@ python -m claude_usage_tracker chart --days 7
 
 > 本工具讀取 claumon 產生的資料庫。請先依 [`docs/setup-guide.md`](docs/setup-guide.md) 安裝並啟動 claumon（或使用上方一鍵腳本）。
 
+### 移除
+
+```powershell
+# 移除 claumon 與本工具（保留 Claude Code）
+powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
+#   -StopOnly   只停掉背景常駐與一直跳的通知，不移除檔案
+#   -PurgeData  連同 ~/.claumon 歷史資料一併刪除
+```
+
 ---
 
 ## 使用
@@ -128,7 +137,8 @@ claude-usage-tracker/
 ├── docs/
 │   └── setup-guide.md          # claumon + Claude Code CLI 部署指南（Windows）
 ├── scripts/
-│   └── install.ps1             # Windows 一鍵安裝（Claude Code + claumon + 本工具）
+│   ├── install.ps1             # Windows 一鍵安裝（Claude Code + claumon + 本工具）
+│   └── uninstall.ps1           # 移除 claumon 與本工具（保留 Claude Code）；-StopOnly 只停背景
 └── src/
     └── claude_usage_tracker/
         ├── __init__.py
