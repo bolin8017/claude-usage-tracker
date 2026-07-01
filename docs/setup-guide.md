@@ -131,11 +131,22 @@ if (-not (Get-Process -Name claumon -ErrorAction SilentlyContinue)) {
 }
 '@ | Set-Content -Path $watchdog -Encoding UTF8
 
+# 1b) 以 VBS 包一層：排程若直接起 powershell.exe，每 3 分鐘會閃一下 conhost 視窗
+# （-WindowStyle Hidden 是啟動後才隱藏）。改由 wscript(GUI、無主控台) 隱藏啟動 → 不閃窗。
+$vbs = "$dir\claumon-watchdog.vbs"
+@'
+' Launch the claumon watchdog fully hidden (no console window flash).
+Dim fso, ps1
+Set fso = CreateObject("Scripting.FileSystemObject")
+ps1 = fso.BuildPath(fso.GetParentFolderName(WScript.ScriptFullName), "claumon-watchdog.ps1")
+CreateObject("WScript.Shell").Run _
+  "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File """ & ps1 & """", 0, False
+'@ | Set-Content -Path $vbs -Encoding ASCII
+
 # 2) 註冊排程任務（登入啟動 + 每 3 分鐘自動重啟；免系統管理員）
 # 用目前登入身分的完整名稱（Entra/AzureAD 加入的機器是 AzureAD\user，拼 USERDOMAIN\USERNAME 會解析失敗）
 $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-$action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watchdog`""
+$action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //Nologo `"$vbs`""
 $trigLogon = New-ScheduledTaskTrigger -AtLogOn -User $me
 $trigTick  = New-ScheduledTaskTrigger -Once -At (Get-Date) `
     -RepetitionInterval (New-TimeSpan -Minutes 3) -RepetitionDuration (New-TimeSpan -Days 3650)
@@ -311,6 +322,7 @@ Get-Command claumon -ErrorAction SilentlyContinue
 # 停用背景常駐（移除 watchdog 排程與腳本）
 Unregister-ScheduledTask -TaskName ClaumonWatchdog -Confirm:$false -ErrorAction SilentlyContinue
 Remove-Item "$env:LOCALAPPDATA\Programs\claumon\claumon-watchdog.ps1" -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:LOCALAPPDATA\Programs\claumon\claumon-watchdog.vbs" -Force -ErrorAction SilentlyContinue
 try { & "$env:LOCALAPPDATA\Programs\claumon\claumon.exe" service uninstall | Out-Null } catch {}  # 清掉舊版官方 Startup(vbs)（若有）
 Stop-Process -Name claumon -Force -ErrorAction SilentlyContinue
 
