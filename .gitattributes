@@ -1,0 +1,6 @@
+# scripts/install.ps1 contains Traditional Chinese comments/strings and MUST keep a
+# UTF-8 BOM: Windows PowerShell 5.1 (powershell.exe) otherwise reads the .ps1 with
+# the system ANSI code page (CP950/Big5 on zh-TW), misparses the Chinese, and fails.
+# The BOM (EF BB BF) is committed as the file's leading bytes; Git preserves it as-is.
+# Keep these files CRLF and never strip the leading BOM when editing.
+*.ps1 text eol=crlf
