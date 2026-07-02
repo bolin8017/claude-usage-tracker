@@ -35,6 +35,8 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 
 腳本會自動完成安裝；唯一需手動的是 `claude` 登入（瀏覽器授權），腳本結束時會提示。詳見 [`docs/setup-guide.md`](docs/setup-guide.md)。
 
+安裝時還會一併部署 **Claude OAuth token 自動續期**，讓額度儀表不會因 Claude Code 閒置而斷線 —— 詳見下方[額度儀表為什麼會斷線](#額度儀表為什麼會斷線自動續期)。
+
 ### 只安裝本工具
 
 ```bash
@@ -125,6 +127,25 @@ claude-usage export                  # 全部
 
 ---
 
+## 額度儀表為什麼會斷線（自動續期）
+
+claumon 讀取 `~/.claude/.credentials.json` 去打訂閱用量 API，但它**自己不會續期** token，完全依賴 Claude Code 幫忙刷新。Claude Code 的 access token 約 **8 小時**過期，且其背景 daemon **一閒置就會結束**；因此當你一段時間沒用 Claude Code（例如整晚），token 過期後沒人續期，claumon 的額度儀表就會變空，直到你下次手動 `claude` 登入。
+
+一鍵安裝會部署續期腳本 `claumon-token-refresh.ps1`，由 watchdog **每 3 分鐘心跳時**檢查一次：
+
+- 只在 token **快過期或已過期**（預設剩 ≤120 秒）時才用標準 OAuth refresh grant 刷新，並寫回 `.credentials.json`。
+- 緩衝刻意小於 Claude Code daemon 的主動續期時機（過期前約 4 分鐘），因此 **daemon 活著時一定比腳本先動手**，天然避開 refresh token 一次性輪替造成的衝突（兩邊搶著換，晚換者會失效被登出）。腳本只在沒人維持 token 的空窗才補上。
+- 原子寫入、寫回前再讀一次比對，中途失敗也不會弄壞憑證檔。
+
+```powershell
+# 查看續期紀錄
+Get-Content "$env:LOCALAPPDATA\Programs\claumon\claumon-token-refresh.log" -Tail 20
+```
+
+> 注意：這只解決 access token 續期。若電腦長時間關機導致 **refresh token 本身**過期，仍需手動 `claude` 登入一次。
+
+---
+
 ## 專案結構
 
 ```
@@ -138,7 +159,8 @@ claude-usage-tracker/
 │   └── setup-guide.md          # claumon + Claude Code CLI 部署指南（Windows）
 ├── scripts/
 │   ├── install.ps1             # Windows 一鍵安裝（Claude Code + claumon + 本工具）
-│   └── uninstall.ps1           # 移除 claumon 與本工具（保留 Claude Code）；-StopOnly 只停背景
+│   ├── uninstall.ps1           # 移除 claumon 與本工具（保留 Claude Code）；-StopOnly 只停背景
+│   └── claumon-token-refresh.ps1  # Claude OAuth token 自動續期（由 watchdog 每 3 分鐘呼叫）
 └── src/
     └── claude_usage_tracker/
         ├── __init__.py
