@@ -11,6 +11,8 @@
   解決 Claude Code 閒置後 access token 過期、claumon 額度儀表變空、需手動重新登入的問題。
   緩衝刻意小於 Claude Code daemon 主動續期時機，避免 refresh token 輪替衝突；採原子寫入、
   寫回前再比對，失敗不損毀憑證檔。`install.ps1` 會自動部署，`uninstall.ps1` 會隨資料夾一併移除。
+- 多帳號分流：自動偵測 `claude` 換帳號，`chart`/`export` 新增 `--account`、新增 `accounts`
+  子指令、混帳號圖表換帳號標記。
 
 ### Added
 - 初版發布。
