@@ -19,3 +19,6 @@ exports/
 Thumbs.db
 .idea/
 .vscode/
+
+# 執行期日誌
+*.log
