@@ -119,6 +119,16 @@ if (-not $SkipClaumon) {
         Write-Warning "找不到 claumon-token-refresh.ps1，略過自動續期（token 仍需靠 Claude Code 自行維持）。"
     }
 
+    # 一併安裝帳號偵測腳本，供每次心跳偵測換帳號、寫入 account-timeline.jsonl。
+    $acctSrc = Join-Path $PSScriptRoot 'claumon-account-track.ps1'
+    $acctDst = "$dir\claumon-account-track.ps1"
+    if (Test-Path $acctSrc) {
+        Copy-Item -Force $acctSrc $acctDst
+        Write-Host "已安裝帳號偵測腳本：$acctDst"
+    } else {
+        Write-Warning "找不到 claumon-account-track.ps1，略過帳號偵測（多帳號分流將無資料）。"
+    }
+
     # 寫入 watchdog 腳本（純英文，避免編碼問題）：claumon 不在跑就隱藏重啟，並順手續期 token
     $watchdog = "$dir\claumon-watchdog.ps1"
     @'
@@ -132,6 +142,9 @@ if (-not (Get-Process -Name claumon -ErrorAction SilentlyContinue)) {
 # never go stale (claumon cannot refresh on its own). Best-effort; never throws.
 $refresh = Join-Path $PSScriptRoot 'claumon-token-refresh.ps1'
 if (Test-Path $refresh) { try { & $refresh } catch {} }
+# Detect Claude account switches so claude-usage can split usage per account.
+$acct = Join-Path $PSScriptRoot 'claumon-account-track.ps1'
+if (Test-Path $acct) { try { & $acct } catch {} }
 '@ | Set-Content -Path $watchdog -Encoding UTF8
 
     # 以 VBS 包一層：排程若直接起 powershell.exe，每次都會閃一下 conhost 視窗
