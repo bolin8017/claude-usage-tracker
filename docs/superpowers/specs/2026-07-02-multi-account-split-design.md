@@ -111,7 +111,12 @@ snapshot 歸屬模糊，可接受，文件註明。
 
 - `chart` 與 `export` 皆新增 `--account <email 或 uuid>`：
   - 解析流程：`load_timeline` → `resolve_account` → `account_intervals`[uuid] → 傳給
-    `load_snapshots(utc_intervals=...)`。
+    以 snapshot 為來源的查詢。
+  - **chart**：以 `load_snapshots(utc_intervals=...)` 過濾整條時間序列。
+  - **export**：`--account` **只作用在 `utilization_*.csv`**（來源 `usage_snapshots`，有時間戳、
+    可依 UTC 區間乾淨過濾）；`monthly_summary.csv` 與 `daily_*.csv`（來源 `daily_aggregates`，
+    只有「日」粒度、且 token/成本為本機 session 層級）**維持全量不切**，並在輸出印一行說明
+    「token/成本為日粒度、本機層級，不依帳號分」。
   - timeline 不存在或空、或解析不到帳號 → 友善錯誤並結束（提示先跑過偵測或用 `accounts` 查）。
   - 未給 `--account` → 行為完全不變（全部資料）。
 - 輸出檔名在有 `--account` 時附帳號短碼（uuid 前 6 碼），例如
