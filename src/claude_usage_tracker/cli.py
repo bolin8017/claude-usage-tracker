@@ -14,6 +14,13 @@ from .account import (AccountSelectionError, account_intervals,
 from .db import connect_ro, default_db_path, load_snapshots
 
 
+_SHORT_UUID_LEN = 6
+
+
+def _short(uuid: str) -> str:
+    return uuid[:_SHORT_UUID_LEN]
+
+
 def _add_range(p: argparse.ArgumentParser) -> None:
     g = p.add_mutually_exclusive_group()
     g.add_argument("--days", type=int, default=14, help="最近 N 天（預設 14）")
@@ -35,7 +42,21 @@ def _resolve_intervals(timeline, account, now_utc):
         return None, None
     uuid = resolve_account(timeline, account)      # 失敗丟 AccountSelectionError
     intervals = account_intervals(timeline, now_utc).get(uuid, [])
-    return intervals, uuid[:6]
+    return intervals, _short(uuid)
+
+
+def _markers_for(timeline, first_local, last_local):
+    """Chart account-switch markers for the plotted local-time span.
+
+    first_local / last_local are naive local datetimes (the Record time axis).
+    Returns a list of (naive_local_time, label) or None if no switch falls in range.
+    """
+    start_utc = first_local.astimezone(timezone.utc)
+    end_utc = last_local.astimezone(timezone.utc)
+    bs = boundaries_for_range(timeline, start_utc, end_utc)
+    if not bs:
+        return None
+    return [(b.ts.astimezone().replace(tzinfo=None), b.email or _short(b.uuid)) for b in bs]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -87,7 +108,7 @@ def _run_accounts(db_path: str) -> None:
                                      utc_intervals=intervals.get(a.uuid, [])))
             fs = a.first_seen.astimezone().strftime("%Y-%m-%d %H:%M")
             ls = a.last_seen.astimezone().strftime("%Y-%m-%d %H:%M")
-            print(f"{a.email:<32}{a.uuid[:8]:<10}{fs:<18}{ls:<18}{cnt}")
+            print(f"{a.email:<32}{_short(a.uuid):<8}{fs:<18}{ls:<18}{cnt}")
     finally:
         con.close()
 
@@ -136,12 +157,7 @@ def main(argv=None) -> None:
 
     markers = None
     if not args.account and not args.no_account_markers and timeline:
-        start_utc = recs[0].time.astimezone(timezone.utc)
-        end_utc = recs[-1].time.astimezone(timezone.utc)
-        bs = boundaries_for_range(timeline, start_utc, end_utc)
-        if bs:
-            markers = [(b.ts.astimezone().replace(tzinfo=None), b.email or b.uuid[:6])
-                       for b in bs]
+        markers = _markers_for(timeline, recs[0].time, recs[-1].time)
 
     scope = args.month if args.month else ("all" if args.all else f"last{args.days}d")
     chart_mod.run(recs, out_dir=args.out, scope=scope, series=series,
