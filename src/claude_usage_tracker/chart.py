@@ -111,7 +111,7 @@ def write_timeseries_csv(path: str, recs: Sequence[Record], series: Sequence[str
 
 
 def draw_chart(path: str, recs: Sequence[Record], series: Sequence[str],
-               title: str, gap_min: float) -> None:
+               title: str, gap_min: float, markers=None) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -138,6 +138,13 @@ def draw_chart(path: str, recs: Sequence[Record], series: Sequence[str],
     ax.set_xlabel("Local time")
     ax.set_title(f"Claude Usage — {title}")
     ax.grid(True, alpha=0.25)
+    if markers:
+        for mt, label in markers:
+            ax.axvline(mt, color="#9ca3af", linestyle="--", linewidth=1,
+                       alpha=0.7, zorder=1)
+            ax.annotate(label, (mt, 100), textcoords="offset points",
+                        xytext=(2, -10), rotation=90, va="top", ha="left",
+                        fontsize=7, color="#6b7280")
     ax.legend(loc="upper left")
 
     times = [r.time for r in recs]
@@ -151,7 +158,8 @@ def draw_chart(path: str, recs: Sequence[Record], series: Sequence[str],
 
 
 def run(recs: List[Record], *, out_dir: str, scope: str, series: List[str],
-        resample_min: int, agg: str, no_chart: bool) -> None:
+        resample_min: int, agg: str, no_chart: bool,
+        account_tag: Optional[str] = None, markers=None) -> None:
     """輸出時間序列 CSV，並（預設）畫出曲線圖。"""
     os.makedirs(out_dir, exist_ok=True)
     raw_n = len(recs)
@@ -160,11 +168,12 @@ def run(recs: List[Record], *, out_dir: str, scope: str, series: List[str],
 
     gap_min = gap_threshold_minutes(resample_min)
     tag = "-".join(series)
+    acct = f"_{account_tag}" if account_tag else ""
     suffix = scope + (f"_{resample_min}m" if resample_min > 0 else "")
     rng = f"{recs[0].time:%Y-%m-%d %H:%M} ~ {recs[-1].time:%Y-%m-%d %H:%M}"
     title = rng + (f"  ({resample_min}m {agg})" if resample_min > 0 else "")
 
-    csv_path = os.path.join(out_dir, f"usage_timeseries_{suffix}_{tag}.csv")
+    csv_path = os.path.join(out_dir, f"usage_timeseries_{suffix}_{tag}{acct}.csv")
     write_timeseries_csv(csv_path, recs, series)
 
     if resample_min > 0:
@@ -183,6 +192,6 @@ def run(recs: List[Record], *, out_dir: str, scope: str, series: List[str],
     print(f"[OK] {csv_path}")
 
     if not no_chart:
-        png_path = os.path.join(out_dir, f"usage_chart_{suffix}_{tag}.png")
-        draw_chart(png_path, recs, series, title, gap_min)
+        png_path = os.path.join(out_dir, f"usage_chart_{suffix}_{tag}{acct}.png")
+        draw_chart(png_path, recs, series, title, gap_min, markers)
         print(f"[OK] {png_path}")

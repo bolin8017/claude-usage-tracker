@@ -19,6 +19,9 @@ classifiers = [
 ]
 dependencies = ["matplotlib>=3.5"]
 
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
 [project.urls]
 "Homepage" = "https://github.com/bolin8017/claude-usage-tracker"
 "Issues" = "https://github.com/bolin8017/claude-usage-tracker/issues"

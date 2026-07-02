@@ -161,6 +161,9 @@ Start-ScheduledTask -TaskName "ClaumonWatchdog"
 ```
 
 > 一鍵腳本 `scripts\install.ps1` 已內建以上流程，手動部署才需要這段。
+> 
+> 安裝也會部署 `claumon-account-track.ps1`，由 watchdog 每 3 分鐘偵測 `claude` 是否換了帳號，
+> 換帳號時寫入 `~/.claumon/account-timeline.jsonl`，供 `claude-usage --account` / `accounts` 分流用量。
 
 ### 步驟 5：驗證
 

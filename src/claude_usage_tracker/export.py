@@ -51,24 +51,44 @@ def _daily(con: sqlite3.Connection, out_dir: str, month: Optional[str], scope: s
     return path, _write_csv(path, header, con.execute(sql, params).fetchall())
 
 
-def _utilization(con: sqlite3.Connection, out_dir: str, month: Optional[str], scope: str):
+def _utilization(con: sqlite3.Connection, out_dir: str, month: Optional[str], scope: str,
+                 utc_intervals=None, account_tag: Optional[str] = None):
     sql = ("SELECT substr(timestamp,1,7) AS month, "
            "ROUND(MAX(session_pct),1), ROUND(AVG(session_pct),1), "
            "ROUND(MAX(weekly_pct),1), ROUND(AVG(weekly_pct),1), COUNT(*) "
            "FROM usage_snapshots ")
-    params: tuple = ()
+    where: list = []
+    params: list = []
     if month:
-        sql += "WHERE substr(timestamp,1,7)=? "
-        params = (month,)
+        where.append("substr(timestamp,1,7)=?")
+        params.append(month)
+    if utc_intervals is not None:
+        if utc_intervals:
+            ors = []
+            for s, e in utc_intervals:
+                ors.append("(timestamp>=? AND timestamp<?)")
+                params.append(s.strftime("%Y-%m-%d %H:%M:%S"))
+                params.append(e.strftime("%Y-%m-%d %H:%M:%S"))
+            where.append("(" + " OR ".join(ors) + ")")
+        else:
+            where.append("0=1")  # 空區間 → 不回任何列
+    if where:
+        sql += "WHERE " + " AND ".join(where) + " "
     sql += "GROUP BY month ORDER BY month"
     header = ["month", "session_pct_max", "session_pct_avg",
               "weekly_pct_max", "weekly_pct_avg", "snapshots"]
-    path = os.path.join(out_dir, f"utilization_{scope}.csv")
+    acct = f"_{account_tag}" if account_tag else ""
+    path = os.path.join(out_dir, f"utilization_{scope}{acct}.csv")
     return path, _write_csv(path, header, con.execute(sql, params).fetchall())
 
 
-def run(con: sqlite3.Connection, *, out_dir: str, month: Optional[str]) -> None:
-    """匯出月度彙整、每日明細、額度峰值三份 CSV。"""
+def run(con: sqlite3.Connection, *, out_dir: str, month: Optional[str],
+        utc_intervals=None, account_tag: Optional[str] = None) -> None:
+    """匯出月度彙整、每日明細、額度峰值三份 CSV。
+
+    --account（utc_intervals）只作用於 utilization；token/成本（daily_aggregates）
+    為日粒度、本機層級，維持全量不切。
+    """
     scope = month if month else "all"
     os.makedirs(out_dir, exist_ok=True)
     print(f"範圍　：{scope}")
@@ -78,8 +98,12 @@ def run(con: sqlite3.Connection, *, out_dir: str, month: Optional[str]) -> None:
     print(f"[OK] {os.path.basename(p1)}  ({n1} 個月)")
     p2, n2 = _daily(con, out_dir, month, scope)
     print(f"[OK] {os.path.basename(p2)}  ({n2} 天)")
-    p3, n3 = _utilization(con, out_dir, month, scope)
+    p3, n3 = _utilization(con, out_dir, month, scope, utc_intervals, account_tag)
     print(f"[OK] {os.path.basename(p3)}  ({n3} 個月)")
+
+    if utc_intervals is not None:
+        print("\n[說明] --account 只作用於 utilization（額度快照）；"
+              "token/成本為日粒度、本機層級，不依帳號分。")
 
     if n2 == 0:
         print("\n[提醒] daily 明細為 0 筆：此機器尚無 Claude Code session 的 "

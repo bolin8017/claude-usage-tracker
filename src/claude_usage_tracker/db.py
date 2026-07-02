@@ -38,6 +38,14 @@ def _utc_to_local(ts_str: str) -> datetime:
     return dt.replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
 
 
+def _parse_utc(ts_str: str) -> datetime:
+    return datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+
+
+def _in_intervals(t: datetime, intervals) -> bool:
+    return any(s <= t < e for s, e in intervals)
+
+
 def _sonnet_pct(raw_json: str) -> Optional[float]:
     try:
         sd = json.loads(raw_json).get("seven_day_sonnet")
@@ -49,10 +57,12 @@ def _sonnet_pct(raw_json: str) -> Optional[float]:
 
 
 def load_snapshots(con: sqlite3.Connection, *, month: Optional[str] = None,
-                   days: Optional[int] = None, all_: bool = False) -> List[Record]:
+                   days: Optional[int] = None, all_: bool = False,
+                   utc_intervals: Optional[List[tuple]] = None) -> List[Record]:
     """讀取 usage_snapshots，回傳依時間排序的 Record 清單。
 
-    篩選優先序：month > all_ > days。
+    篩選優先序：month > all_ > days。另可傳 utc_intervals（aware UTC 區間清單）
+    只保留落在任一 [start, end) 內的快照；傳入空清單則回空。
     """
     sql = ("SELECT timestamp, session_pct, weekly_pct, raw_json "
            "FROM usage_snapshots ")
@@ -66,5 +76,10 @@ def load_snapshots(con: sqlite3.Connection, *, month: Optional[str] = None,
         sql += "WHERE timestamp>=? "
         params.append(cutoff)
     sql += "ORDER BY timestamp"
-    return [Record(_utc_to_local(ts), s, wk, _sonnet_pct(raw))
-            for ts, s, wk, raw in con.execute(sql, params)]
+
+    out: List[Record] = []
+    for ts, s, wk, raw in con.execute(sql, params):
+        if utc_intervals is not None and not _in_intervals(_parse_utc(ts), utc_intervals):
+            continue
+        out.append(Record(_utc_to_local(ts), s, wk, _sonnet_pct(raw)))
+    return out

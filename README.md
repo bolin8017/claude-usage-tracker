@@ -127,6 +127,29 @@ claude-usage export                  # 全部
 
 ---
 
+## 多帳號分流
+
+若你在同一台機器 `claude` 登入不同帳號，claumon 的**即時**額度儀表會自動切到新帳號
+（它每次都即時讀憑證檔）；但它寫的 `usage.db` **沒有帳號欄位**，歷史會混在一起。
+
+本工具透過 watchdog 每 3 分鐘心跳執行的 `claumon-account-track.ps1` 偵測換帳號
+（打 profile API 取穩定的 `account.uuid`），只在換帳號時把邊界追加到
+`~/.claumon/account-timeline.jsonl`。之後即可依帳號檢視：
+
+```bash
+claude-usage accounts                              # 列出已知帳號
+claude-usage chart --all --account alice@x.com     # 只看該帳號的用量
+claude-usage export --account alice@x.com          # utilization 依帳號切
+```
+
+- `--account` 接受 email、uuid，或 email/顯示名稱的子字串（需唯一）。
+- 未給 `--account` 時行為不變；混帳號的圖會在切換點標出換帳號（`--no-account-markers` 可關）。
+- **注意**：偵測開始前的舊資料視為「未歸屬」，`--account` 不含；邊界精度 ≈ 3 分鐘心跳。
+- export 的 `--account` **只作用於 `utilization_*.csv`**（額度快照）；`monthly_summary.csv` /
+  `daily_*.csv`（token/成本）為日粒度、本機層級，維持全量不切。
+
+---
+
 ## 額度儀表為什麼會斷線（自動續期）
 
 claumon 讀取 `~/.claude/.credentials.json` 去打訂閱用量 API，但它**自己不會續期** token，完全依賴 Claude Code 幫忙刷新。Claude Code 的 access token 約 **8 小時**過期，且其背景 daemon **一閒置就會結束**；因此當你一段時間沒用 Claude Code（例如整晚），token 過期後沒人續期，claumon 的額度儀表就會變空，直到你下次手動 `claude` 登入。
@@ -160,7 +183,8 @@ claude-usage-tracker/
 ├── scripts/
 │   ├── install.ps1             # Windows 一鍵安裝（Claude Code + claumon + 本工具）
 │   ├── uninstall.ps1           # 移除 claumon 與本工具（保留 Claude Code）；-StopOnly 只停背景
-│   └── claumon-token-refresh.ps1  # Claude OAuth token 自動續期（由 watchdog 每 3 分鐘呼叫）
+│   ├── claumon-token-refresh.ps1  # Claude OAuth token 自動續期（由 watchdog 每 3 分鐘呼叫）
+│   └── claumon-account-track.ps1   # 換帳號偵測，寫 account-timeline.jsonl（watchdog 每 3 分鐘呼叫）
 └── src/
     └── claude_usage_tracker/
         ├── __init__.py
