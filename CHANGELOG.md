@@ -14,6 +14,11 @@
 - 多帳號分流：自動偵測 `claude` 換帳號，`chart`/`export` 新增 `--account`、新增 `accounts`
   子指令、混帳號圖表換帳號標記。
 
+### Fixed
+- `install.ps1` 第 4 步優先用 `py -3` 找正式安裝的 Python，不再誤用 PATH 上其他工具的
+  venv（例如沒有 pip 的 MCP client venv，會出現 `No module named pip`）；先確認 pip 可用，
+  失敗時印出實際 Python 路徑與修正指令，pip 失敗也會明確警告。
+
 ### Added
 - 初版發布。
 - `claude-usage export`：匯出每月 token / 成本彙整與額度峰值 CSV。
