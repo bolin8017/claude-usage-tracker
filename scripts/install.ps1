@@ -189,11 +189,37 @@ CreateObject("WScript.Shell").Run _
 # 4. 本工具 ------------------------------------------------------------------
 if (-not $SkipTool) {
     Write-Step 4 "安裝 claude-usage-tracker（pip install -e .）"
-    if (Test-Cmd "python") {
-        python -m pip install -e $repoRoot
-    } else {
-        Write-Warning "找不到 python；請先安裝 Python 3.9+ 後再執行：pip install -e ."
+    # Prefer the py launcher: it finds registered installs regardless of PATH,
+    # so another tool's venv (often created without pip) can't shadow it.
+    # Probes write to stderr on failure; under "Stop" Windows PowerShell 5.1
+    # would turn that into a terminating error, so relax it for this step.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $pyCmd = $null
+    if (Test-Cmd "py") {
+        & py -3 -c "pass" 2>$null
+        if ($LASTEXITCODE -eq 0) { $pyCmd = @("py", "-3") }
     }
+    if (-not $pyCmd -and (Test-Cmd "python")) { $pyCmd = @("python") }
+
+    if (-not $pyCmd) {
+        Write-Warning "找不到 python；請先安裝 Python 3.9+（例如 winget install Python.Python.3.12）後再執行：py -3 -m pip install -e ."
+    } else {
+        $pyExe  = $pyCmd[0]
+        $pyArgs = @($pyCmd | Select-Object -Skip 1)
+        $pyPath = & $pyExe @pyArgs -c "import sys; print(sys.executable)" 2>$null
+        Write-Host "使用 Python：$pyPath"
+        & $pyExe @pyArgs -m pip --version *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "此 Python 沒有 pip（可能是其他工具的虛擬環境）：$pyPath`n請安裝正式版 Python 3.9+ 後執行：py -3 -m pip install -e `"$repoRoot`""
+        } else {
+            & $pyExe @pyArgs -m pip install -e $repoRoot
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "pip install 失敗（exit $LASTEXITCODE），請檢查上方錯誤訊息。"
+            }
+        }
+    }
+    $ErrorActionPreference = $prevEap
 } else { Write-Step 4 "略過本工具" }
 
 # 完成提示 -------------------------------------------------------------------
