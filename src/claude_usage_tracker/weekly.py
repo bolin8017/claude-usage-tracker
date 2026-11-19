@@ -31,7 +31,8 @@ def gap_hours(row: WeekRow) -> float:
 def write_csv(rows: List[WeekRow], path: str) -> None:
     header = (["account", "week_start", "week_end", "weekly_pct"]
               + [f"{s}_pct" for s in SURFACES]
-              + ["samples", "last_sample", "hours_unsampled_before_reset", "status"])
+              + ["resets", "samples", "last_sample", "hours_unsampled_before_reset",
+                 "status"])
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(header)
@@ -41,7 +42,7 @@ def write_csv(rows: List[WeekRow], path: str) -> None:
                         _local(r.window_end).strftime("%Y-%m-%d %H:%M"),
                         r.peak_pct]
                        + [r.breakdown.get(s, "") for s in SURFACES]
-                       + [r.samples,
+                       + [r.resets, r.samples,
                           _local(r.last_sample).strftime("%Y-%m-%d %H:%M"),
                           max(gap_hours(r), 0.0),
                           STATUS_TEXT[r.status]])
@@ -86,6 +87,8 @@ def run(rows: List[WeekRow], *, out_dir: str, scope: str, no_chart: bool) -> Non
     print(f"{'account':<30}{'week_end':<18}{'weekly':>7}  {'samples':>7}  status")
     for r in rows:
         note = STATUS_TEXT[r.status]
+        if r.resets:
+            note += f"，週期中途 reset {r.resets} 次"
         if r.status == "incomplete":
             note += f"（最後採樣距重置 {gap_hours(r)} 小時）"
         print(f"{(r.email or r.uuid):<30}{_local(r.window_end).strftime('%Y-%m-%d %H:%M'):<18}"

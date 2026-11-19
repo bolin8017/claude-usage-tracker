@@ -1,4 +1,4 @@
-"""命令列介面：claude-usage weekly（每小時記錄），export / chart / accounts（舊 claumon 資料庫）。"""
+"""命令列介面：claude-usage monthly / weekly / import-claumon（每小時記錄），export / chart / accounts（舊 claumon 資料庫）。"""
 from __future__ import annotations
 
 import argparse
@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from . import __version__
 from . import chart as chart_mod
+from . import daily as daily_mod
 from . import export as export_mod
 from . import usagelog
 from . import weekly as weekly_mod
@@ -64,7 +65,7 @@ def _markers_for(timeline, first_local, last_local):
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="claude-usage",
-        description="Claude 訂閱用量記錄的每週報表，以及舊 claumon 資料的匯出與視覺化")
+        description="Claude 訂閱用量記錄的每日／每週報表，以及舊 claumon 資料的匯出與視覺化")
     ap.add_argument("--version", action="version",
                     version=f"claude-usage-tracker {__version__}")
     ap.add_argument("--db", default=default_db_path(),
@@ -72,6 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--log", default=usagelog.default_log_path(),
                     help="每小時用量記錄檔（預設 ~/.claude-usage/usage-log.jsonl）")
     sub = ap.add_subparsers(dest="command", required=True)
+
+    pm = sub.add_parser("monthly", help="每日月報：該月每天結束時的 weekly 使用率（CSV + 折線圖）")
+    pm.add_argument("--month", help="月份 YYYY-MM（預設本月）")
+    pm.add_argument("--account", help="指定帳號（email、uuid 或其子字串）；記錄檔有多個帳號時必填")
+    pm.add_argument("--out", default="exports", help="輸出資料夾（預設 ./exports）")
+    pm.add_argument("--no-chart", action="store_true", help="只輸出 CSV，不畫圖")
 
     pw = sub.add_parser("weekly", help="每週 weekly 額度用量報表（CSV + 長條圖）")
     gw = pw.add_mutually_exclusive_group()
@@ -81,6 +88,9 @@ def build_parser() -> argparse.ArgumentParser:
     pw.add_argument("--out", default="exports", help="輸出資料夾（預設 ./exports）")
     pw.add_argument("--no-chart", action="store_true", help="只輸出 CSV，不畫圖")
 
+    pi = sub.add_parser("import-claumon",
+                        help="把舊 claumon 資料庫的 weekly 歷史匯入記錄檔（只需執行一次）")
+    pi.add_argument("--account", help="只匯入指定帳號（email、uuid 或其子字串）")
 
     pe = sub.add_parser("export", help="匯出每月彙整 CSV（token / 成本 / 額度峰值）")
     pe.add_argument("--out", default="exports", help="輸出資料夾（預設 ./exports）")
@@ -157,11 +167,66 @@ def _run_weekly(args) -> None:
     weekly_mod.run(rows, out_dir=args.out, scope=scope, no_chart=args.no_chart)
 
 
+def _run_monthly(args) -> None:
+    _validate_month(args.month)
+    samples = usagelog.load_samples(args.log)
+    if not samples:
+        sys.exit(f"[提醒] 記錄檔沒有資料：{args.log}")
+    try:
+        if args.account:
+            samples = _filter_account(samples, args.account)
+        elif len({s.uuid for s in samples}) > 1:
+            emails = sorted({s.email or s.uuid for s in samples})
+            raise AccountSelectionError(
+                "記錄檔裡有多個帳號，請用 --account 指定一個：" + ", ".join(emails))
+    except AccountSelectionError as e:
+        sys.exit(f"[錯誤] {e}")
+    month = args.month or datetime.now().strftime("%Y-%m")
+    rows = daily_mod.daily_rows(samples, month, datetime.now().date())
+    print(f"記錄檔：{args.log}\n帳號　：{samples[-1].email or samples[-1].uuid}\n")
+    daily_mod.run(rows, out_dir=args.out, month=month, no_chart=args.no_chart)
+
+
+def _run_import(args) -> None:
+    if usagelog.has_claumon_import(args.log):
+        print(f"記錄檔已含 claumon 匯入資料，略過：{args.log}")
+        return
+    timeline = load_timeline(default_timeline_path())
+    if not timeline:
+        sys.exit("[錯誤] 找不到帳號時間軸 ~/.claumon/account-timeline.jsonl，"
+                 "無法判斷快照屬於哪個帳號。")
+    only = None
+    if args.account:
+        try:
+            only = resolve_account(timeline, args.account)
+        except AccountSelectionError as e:
+            sys.exit(f"[錯誤] {e}")
+    con = connect_ro(args.db)
+    try:
+        records, report = usagelog.claumon_records(con, timeline, only_uuid=only)
+    finally:
+        con.close()
+
+    print(f"{'week_end':<18}{'account':<32}{'share':>6}  snapshots")
+    for w in report:
+        who = (w.owner.email or w.owner.uuid) if w.owner else "（沒有過半數，不匯入）"
+        print(f"{w.window_end.astimezone().strftime('%Y-%m-%d %H:%M'):<18}{who:<32}"
+              f"{w.share:>6.0%}  {w.snapshots}")
+    usagelog.append_records(args.log, records)
+    print(f"\n[OK] 已匯入 {len(records)} 筆到 {args.log}")
+
+
 def main(argv=None) -> None:
     args = build_parser().parse_args(argv)
 
+    if args.command == "monthly":
+        _run_monthly(args)
+        return
     if args.command == "weekly":
         _run_weekly(args)
+        return
+    if args.command == "import-claumon":
+        _run_import(args)
         return
 
     if args.command == "accounts":

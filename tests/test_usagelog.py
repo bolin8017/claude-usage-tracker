@@ -110,3 +110,92 @@ def test_write_csv_columns(tmp_path):
         r = list(csv.DictReader(f))[0]
     assert r["weekly_pct"] == "89.0" and r["claude_code_pct"] == "80.0"
     assert r["cowork_pct"] == "" and r["status"] == "完整"
+
+
+def test_midweek_reset_keeps_peak_and_counts_resets():
+    wend = datetime(2026, 11, 21, 21, 0, tzinfo=UTC)
+    t0 = wend - timedelta(days=5)
+    samples = [
+        _sample(t0, 90.0, wend, bd={"claude_code": 90.0}),
+        _sample(t0 + timedelta(hours=1), 98.0, wend, bd={"claude_code": 95.0, "chat": 3.0}),
+        _sample(t0 + timedelta(hours=2), 0.0, wend, bd={"claude_code": 0.0}),   # reset
+        _sample(t0 + timedelta(hours=3), 52.0, wend, bd={"claude_code": 52.0}),
+        _sample(t0 + timedelta(hours=4), 51.5, wend, bd={"claude_code": 51.5}),  # within tolerance
+    ]
+    row = ul.weekly_rows(samples, now_utc=wend)[0]
+    assert row.peak_pct == 98.0 and row.resets == 1
+    assert row.breakdown == {"claude_code": 95.0, "chat": 3.0}
+
+
+def test_split_segments_tolerates_one_point_jitter():
+    wend = datetime(2026, 11, 21, 21, 0, tzinfo=UTC)
+    t0 = wend - timedelta(days=1)
+    grp = [_sample(t0 + timedelta(hours=i), p, wend) for i, p in enumerate([10.0, 11.0, 10.0, 12.0])]
+    assert len(ul.split_segments(grp)) == 1
+
+
+# ---------------------------------------------------------------------------
+# claumon import
+# ---------------------------------------------------------------------------
+import sqlite3
+
+from claude_usage_tracker.account import Boundary
+
+
+def _claumon_db(rows):
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE usage_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "timestamp TEXT, raw_json TEXT)")
+    con.executemany("INSERT INTO usage_snapshots (timestamp, raw_json) VALUES (?, ?)",
+                    [(t, json.dumps(_raw(p, r))) for t, p, r in rows])
+    return con
+
+
+def test_claumon_import_attributes_whole_window_to_majority_owner():
+    # Timeline says B took over at 03:00, but claumon kept polling A's window
+    # until 05:00 (cached token). The whole A window must still go to A.
+    tl = [Boundary(datetime(2026, 11, 1, 0, 0, tzinfo=UTC), "uuid-a", "a@x.com", "A"),
+          Boundary(datetime(2026, 11, 2, 3, 0, tzinfo=UTC), "uuid-b", "b@x.com", "B")]
+    a_win, b_win = "2026-11-07T21:00:00.2+00:00", "2026-11-05T15:00:00+00:00"
+    rows = [(f"2026-11-0{d} {h:02d}:00:00", 10.0 + d * 24 + h, a_win)
+            for d in (1, 2) for h in range(0, 24) if (d, h) <= (2, 4)]
+    rows += [(f"2026-11-02 {h:02d}:30:00", 1.0 + h, b_win) for h in range(5, 10)]
+    recs, report = ul.claumon_records(_claumon_db(rows), tl)
+    owners = {w.window_end.hour: (w.owner.uuid, round(w.share, 2)) for w in report}
+    assert owners[21][0] == "uuid-a" and owners[21][1] < 1.0   # some votes went to B
+    assert owners[15] == ("uuid-b", 1.0)
+    assert {r["uuid"] for r in recs if r["raw"]["seven_day"]["resets_at"] == a_win} == {"uuid-a"}
+
+
+def test_claumon_import_keeps_hourly_last_and_pre_reset_peak():
+    tl = [Boundary(datetime(2026, 11, 1, 0, 0, tzinfo=UTC), "uuid-a", "a@x.com", "A")]
+    win = "2026-11-21T21:00:00+00:00"
+    rows = [("2026-11-17 18:30:20", 97.0, win),
+            ("2026-11-17 18:36:20", 98.0, win),   # peak right before the reset
+            ("2026-11-17 18:38:21", 0.0, win),
+            ("2026-11-17 18:58:00", 1.0, win),    # last of the hour
+            ("2026-11-17 19:10:00", 2.0, win)]
+    recs, _ = ul.claumon_records(_claumon_db(rows), tl)
+    assert [r["raw"]["seven_day"]["utilization"] for r in recs] == [98.0, 1.0, 2.0]
+
+
+def test_claumon_import_only_uuid_and_no_majority():
+    tl = [Boundary(datetime(2026, 11, 1, 0, 0, tzinfo=UTC), "uuid-a", "a@x.com", "A"),
+          Boundary(datetime(2026, 11, 1, 2, 0, tzinfo=UTC), "uuid-b", "b@x.com", "B")]
+    win = "2026-11-07T21:00:00+00:00"
+    rows = [("2026-11-01 01:00:00", 1.0, win), ("2026-11-01 03:00:00", 2.0, win)]  # 50/50
+    recs, report = ul.claumon_records(_claumon_db(rows), tl)
+    assert recs == [] and report[0].owner is None
+    rows.append(("2026-11-01 04:00:00", 3.0, win))                                 # B majority
+    recs, _ = ul.claumon_records(_claumon_db(rows), tl, only_uuid="uuid-a")
+    assert recs == []
+
+
+def test_append_and_detect_import(tmp_path):
+    p = str(tmp_path / "log.jsonl")
+    assert not ul.has_claumon_import(p)
+    ul.append_records(p, [{"ts": "2026-11-01T00:00:00Z", "uuid": "u", "email": "é@x.com",
+                           "display_name": "É", "source": "claumon",
+                           "raw": _raw(5.0, "2026-11-07T21:00:00Z")}])
+    assert ul.has_claumon_import(p)
+    assert ul.load_samples(p)[0].email == "é@x.com"
