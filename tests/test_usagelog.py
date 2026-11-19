@@ -77,7 +77,7 @@ def test_weekly_rows_peak_status_and_account_split():
     ]
     rows = ul.weekly_rows(samples, now_utc=wend + timedelta(days=1))
     by = {r.uuid: r for r in rows}
-    assert by["u-1"].used_pct == 89 and by["u-1"].status == "complete"
+    assert by["u-1"].peak_pct == 89 and by["u-1"].status == "complete"
     assert by["u-1"].breakdown == {"claude_code": 80, "chat": 9}
     assert by["u-1"].window_start == wend - timedelta(days=7)
     assert by["u-2"].status == "incomplete"                 # last sample 2 days before reset
@@ -112,7 +112,7 @@ def test_write_csv_columns(tmp_path):
     assert r["cowork_pct"] == "" and r["status"] == "完整"
 
 
-def test_midweek_reset_sums_segment_peaks_and_breakdowns():
+def test_midweek_reset_keeps_peak_and_counts_resets():
     wend = datetime(2026, 11, 21, 21, 0, tzinfo=UTC)
     t0 = wend - timedelta(days=5)
     samples = [
@@ -123,9 +123,8 @@ def test_midweek_reset_sums_segment_peaks_and_breakdowns():
         _sample(t0 + timedelta(hours=4), 51.5, wend, bd={"claude_code": 51.5}),  # within tolerance
     ]
     row = ul.weekly_rows(samples, now_utc=wend)[0]
-    assert row.segment_peaks == (98.0, 52.0)
-    assert row.used_pct == 150.0
-    assert row.breakdown == {"claude_code": 147.0, "chat": 3.0}
+    assert row.peak_pct == 98.0 and row.resets == 1
+    assert row.breakdown == {"claude_code": 95.0, "chat": 3.0}
 
 
 def test_split_segments_tolerates_one_point_jitter():

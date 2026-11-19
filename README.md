@@ -1,10 +1,10 @@
 # claude-usage-tracker
 
-每小時記錄一次 Claude（Pro/Max 訂閱）帳號的 weekly 額度使用率（本週用量占每週額度的百分比），並整理成每週報表（CSV 與長條圖），方便附在月報裡。
+每小時記錄一次 Claude（Pro/Max 訂閱）帳號的 weekly 額度使用率（本週用量占每週額度的百分比），並整理成月報：每天一列的 CSV 與折線圖，也可以輸出每週摘要。
 
 ```
 排程 ClaudeUsageLogger（登入時與每小時各一次）
-  └─ usage-logger.ps1 ── 額度 API ──► ~/.claude-usage/usage-log.jsonl ──► claude-usage weekly ──► CSV + PNG
+  └─ usage-logger.ps1 ── 額度 API ──► ~/.claude-usage/usage-log.jsonl ──► claude-usage monthly ──► CSV + PNG
 ```
 
 ---
@@ -55,7 +55,43 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
 
 ---
 
-## 每月報表：weekly
+## 每月報表：monthly
+
+```bash
+claude-usage monthly --month 2026-11 --account louis
+```
+
+輸出 `usage_daily_2026-11.csv` 與 `usage_daily_2026-11.png`。該月每天一列，沒有資料的日子也會列出：
+
+| 欄位 | 說明 |
+| --- | --- |
+| `date` | 日期（本地時間） |
+| `weekly_pct` | 當天最後一筆紀錄的 weekly 使用率（0～100%），和 claude.ai 用量頁看到的一致；沒有資料就留空 |
+| `last_sample` | 當天最後一筆紀錄的時間；電腦較早關機的日子，看得出這是幾點的數字 |
+| `note` | 當天發生的事件，見下方說明 |
+
+`note` 會標出這幾種情況：
+
+- **週期重置（前一週最高 X%）**：weekly 週期換了，使用率從頭算。X 是前一個週期的最高值，也就是那一週的用量。
+- **reset（reset 前 X%）**：同一個週期內使用率突然下降，代表你用了 Claude 的 reset。X 是 reset 前的最高值。
+- **無資料**：那天完全沒有紀錄，例如電腦沒開，或當時還在用 claumon，而 claumon 查的是別的帳號。
+
+事件會記在「事件發生後第一筆紀錄」的那一天。判斷時會拿前一筆紀錄來比，跨日、跨月都偵測得到。例如凌晨 2:38 用了 reset，會拿前一天最後一筆的 98% 來比，所以那天會記為「reset（reset 前 98%）」。
+
+11 月的實際輸出（節錄）：
+
+| date | weekly_pct | last_sample | note |
+| --- | --- | --- | --- |
+| 2026-11-14 | 80 | 23:58 | |
+| 2026-11-15 | 25 | 23:58 | 週期重置（前一週最高 89%） |
+| 2026-11-17 | 91 | 23:59 | |
+| 2026-11-18 | 27 | 23:58 | reset（reset 前 98%） |
+
+記錄檔裡有多個帳號時，必須用 `--account` 指定一個，避免不同帳號的數字混在同一條線上。
+
+---
+
+## 每週摘要：weekly
 
 ```bash
 claude-usage weekly --month 2026-11          # 結束日落在 11 月的每個週期
@@ -76,9 +112,9 @@ claude-usage weekly --month 2026-11 --account louis   # 只看某個帳號
 | 欄位 | 說明 |
 | --- | --- |
 | `week_start` / `week_end` | 週期起訖（本地時間），以 API 的 `resets_at` 為準 |
-| `weekly_pct` | 該週用掉多少 weekly 額度（%）；週期中途歸零時為各段相加，可能超過 100% |
+| `weekly_pct` | 該週 weekly 使用率的最高值（0～100%） |
 | `claude_code_pct` 等 | 各使用管道占 weekly 額度的百分比 |
-| `segment_peaks` | 各段的最大值，例如 `98+52`；沒有中途歸零時只有一段 |
+| `resets` | 週期中途發生的 reset 次數 |
 | `samples` | 該週期的取樣數，滿一週約 168 筆 |
 | `hours_unsampled_before_reset` | 最後一次取樣距週期結束還有幾小時 |
 | `status` | 完整／進行中／可能偏低 |
@@ -87,7 +123,7 @@ claude-usage weekly --month 2026-11 --account louis   # 只看某個帳號
 
 同一個帳號的 weekly 使用率在一個週期內只會增加，到重置時才歸零。所以週期內的最大值就是那一週的用量，每小時取樣一次就夠了。
 
-例外是週期還沒結束、額度就被歸零。claumon 的歷史資料裡出現過三次（9/01、10/14、11/17），都是 2 分鐘內從 61～98% 掉到 0%，`resets_at` 沒有變。遇到這種情況，報表會從下降的地方切成兩段，把各段的最大值相加，並在 `segment_peaks` 列出各段。例如 11/22 結束的那一週（目前還在進行中）是 `98+52`，合計 150%。
+例外是使用者在週期中途用了 Claude 的 reset。claumon 的歷史資料裡有三次（9/01、10/14、11/17），都是 2 分鐘內從 61～98% 掉到 0%，`resets_at` 沒有變。使用率上限是 100%，所以報表仍然取最高值，不把 reset 前後相加，只在 `resets` 記錄 reset 的次數。例如 11/22 結束的那一週（目前還在進行中）是 98%，`resets` 為 1。
 
 如果最後一次取樣距離週期結束超過 2 小時（例如週末關機），後面那段時間的用量就記不到，該週會標成「可能偏低」，並寫出差了幾小時。
 
@@ -127,9 +163,9 @@ claude-usage import-claumon --account louis   # 只匯入指定帳號；不給�
 
 claumon 的資料庫沒有帳號欄位，帳號要靠 `~/.claumon/account-timeline.jsonl` 判斷，但不能逐筆照時間軸歸屬。claumon 會把 token 快取在記憶體，只有在 token 快到期或被拒絕時才重新讀取憑證檔（見 claumon 原始碼 `internal/auth/provider.go`）。所以切換帳號後，它會繼續查詢舊帳號好幾個小時。例如 11/12 到 11/13 有一條從 0% 連續爬到 70% 的曲線，期間時間軸換了三次帳號，曲線卻沒有斷開。
 
-因此匯入是以「週期」為單位：一個週期（`resets_at`）只屬於一個帳號，整個週期歸給時間軸上占多數的帳號；沒有過半數的週期不匯入。匯入時會列出每個週期的歸屬與佔比。資料密度降到每小時一筆，並保留每次中途歸零前的最大值。
+因此匯入是以「週期」為單位：一個週期（`resets_at`）只屬於一個帳號，整個週期歸給時間軸上占多數的帳號；沒有過半數的週期不匯入。匯入時會列出每個週期的歸屬與佔比。資料密度降到每小時一筆，並保留每次 reset 前的最高值。
 
-我們用另一個獨立的方法驗證過這套歸屬方式。API 回應中 `extra_usage` 的帳號設定，在 louis 與其他帳號之間不同，用這個特徵分出 louis 的全部 2 分鐘資料後，14 個週期的各段最大值和匯入結果完全一致。
+我們用另一個獨立的方法驗證過這套歸屬方式。API 回應中 `extra_usage` 的帳號設定，在 louis 與其他帳號之間不同，用這個特徵分出 louis 的全部 2 分鐘資料後，14 個週期的最高值與 reset 前高點，都和匯入結果完全一致。
 
 舊的 `chart`、`export`、`accounts` 指令仍可讀 `usage.db`（`--db` 指定位置），但它們是逐筆依時間軸切分帳號，帳號切換後的幾個小時會算錯，只適合看整體趨勢。
 
@@ -147,7 +183,8 @@ claude-usage-tracker/
 └── src/claude_usage_tracker/
     ├── cli.py               # 命令列入口
     ├── usagelog.py          # 讀記錄檔、解析 API 回應、依帳號與週期彙整、claumon 匯入
-    ├── weekly.py            # 每週報表 CSV 與長條圖
+    ├── daily.py             # 每日月報 CSV 與折線圖
+    ├── weekly.py            # 每週摘要 CSV 與長條圖
     ├── db.py / export.py / chart.py / account.py   # 舊 claumon 資料庫的匯出與圖表
 ```
 

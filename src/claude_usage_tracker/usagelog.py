@@ -4,9 +4,9 @@
 raw 是 usage API 的原始回應，欄位解析
 集中在本模組，API 改欄位時只需改這裡、舊資料可重新解析。
 
-weekly 額度在同一帳號、同一週期內只增不減，除非 Anthropic 在週期中途把額度歸零
-（實測 claumon 歷史中出現過三次，2 分鐘內從 61～98% 掉到 0%，resets_at 不變）。
-因此每個週期以「下降」切成數段，各段最大值相加才是該週實際用量。
+weekly 額度在同一帳號、同一週期內只增不減，除非使用者自己用了 Claude 的 reset
+（claumon 歷史中出現過三次，2 分鐘內從 61～98% 掉到 0%，resets_at 不變）。
+使用率最大就是 100%，所以每週用量取週期內最高值，reset 次數另外計數，不把前後相加。
 週期以 seven_day.resets_at 辨識（同一週期的 resets_at 會在整點前後幾秒抖動，
 因此取最接近的整點當鍵）。
 """
@@ -49,9 +49,9 @@ class WeekRow(NamedTuple):
     email: str
     window_start: datetime       # aware UTC
     window_end: datetime         # aware UTC
-    used_pct: float              # 各段最大值相加
-    segment_peaks: Tuple[float, ...]  # 中途歸零時有多段
-    breakdown: Dict[str, float]  # 各段最大值那筆的分類相加
+    peak_pct: float              # 週期內最高值（0～100）
+    resets: int                  # 週期中途 reset 次數
+    breakdown: Dict[str, float]  # 最高值那筆的分類
     samples: int
     last_sample: datetime        # aware UTC
     status: str                  # complete / in_progress / incomplete
@@ -133,18 +133,15 @@ def split_segments(grp: List[Sample]) -> List[List[Sample]]:
 
 
 def weekly_rows(samples: Iterable[Sample], now_utc: datetime) -> List[WeekRow]:
-    """依 (帳號, 週期) 分組；週期內各段（中途歸零切段）最大值相加為該週用量。"""
+    """依 (帳號, 週期) 分組；週期內最高值為該週用量，另計 reset 次數。"""
     groups: Dict[Tuple[str, datetime], List[Sample]] = {}
     for s in samples:
         groups.setdefault((s.uuid, s.window_end), []).append(s)
     rows: List[WeekRow] = []
     for (uuid, wend), grp in groups.items():
         grp.sort(key=lambda s: s.ts)
-        peaks = [max(seg, key=lambda s: (s.weekly_pct, s.ts)) for seg in split_segments(grp)]
-        breakdown: Dict[str, float] = {}
-        for p in peaks:
-            for k, v in p.breakdown.items():
-                breakdown[k] = breakdown.get(k, 0.0) + v
+        peak = max(grp, key=lambda s: (s.weekly_pct, s.ts))
+        resets = len(split_segments(grp)) - 1
         last = grp[-1].ts
         if now_utc < wend:
             status = "in_progress"
@@ -153,9 +150,8 @@ def weekly_rows(samples: Iterable[Sample], now_utc: datetime) -> List[WeekRow]:
         else:
             status = "incomplete"
         rows.append(WeekRow(uuid, grp[-1].email, wend - WEEK, wend,
-                            sum(p.weekly_pct for p in peaks),
-                            tuple(p.weekly_pct for p in peaks),
-                            breakdown, len(grp), last, status))
+                            peak.weekly_pct, resets, peak.breakdown,
+                            len(grp), last, status))
     rows.sort(key=lambda r: (r.window_end, r.email))
     return rows
 
