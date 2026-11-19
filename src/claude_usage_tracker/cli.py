@@ -1,4 +1,4 @@
-"""命令列介面：claude-usage export / chart / accounts。"""
+"""命令列介面：claude-usage weekly（每小時記錄），export / chart / accounts（舊 claumon 資料庫）。"""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 from . import __version__
 from . import chart as chart_mod
 from . import export as export_mod
-from .account import (AccountSelectionError, account_intervals,
+from . import usagelog
+from . import weekly as weekly_mod
+from .account import (AccountSelectionError, Boundary, account_intervals,
                       boundaries_for_range, default_timeline_path,
                       list_accounts, load_timeline, resolve_account)
 from .db import connect_ro, default_db_path, load_snapshots
@@ -62,12 +64,23 @@ def _markers_for(timeline, first_local, last_local):
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="claude-usage",
-        description="claumon 用量資料匯出與視覺化工具")
+        description="Claude 訂閱用量記錄的每週報表，以及舊 claumon 資料的匯出與視覺化")
     ap.add_argument("--version", action="version",
                     version=f"claude-usage-tracker {__version__}")
     ap.add_argument("--db", default=default_db_path(),
                     help="usage.db 路徑（預設 ~/.claumon/usage.db）")
+    ap.add_argument("--log", default=usagelog.default_log_path(),
+                    help="每小時用量記錄檔（預設 ~/.claude-usage/usage-log.jsonl）")
     sub = ap.add_subparsers(dest="command", required=True)
+
+    pw = sub.add_parser("weekly", help="每週 weekly 額度用量報表（CSV + 長條圖）")
+    gw = pw.add_mutually_exclusive_group()
+    gw.add_argument("--month", help="週期結束日落在此月份 YYYY-MM（預設本月）")
+    gw.add_argument("--all", action="store_true", help="全部週期")
+    pw.add_argument("--account", help="只看指定帳號（email、uuid 或其子字串）")
+    pw.add_argument("--out", default="exports", help="輸出資料夾（預設 ./exports）")
+    pw.add_argument("--no-chart", action="store_true", help="只輸出 CSV，不畫圖")
+
 
     pe = sub.add_parser("export", help="匯出每月彙整 CSV（token / 成本 / 額度峰值）")
     pe.add_argument("--out", default="exports", help="輸出資料夾（預設 ./exports）")
@@ -113,8 +126,43 @@ def _run_accounts(db_path: str) -> None:
         con.close()
 
 
+def _filter_account(samples, query):
+    """依 --account 篩選樣本；對不到唯一帳號丟 AccountSelectionError。"""
+    seen = {}
+    for s in samples:
+        seen[s.uuid] = Boundary(s.ts, s.uuid, s.email, "")
+    uuid = resolve_account(list(seen.values()), query)
+    return [s for s in samples if s.uuid == uuid]
+
+
+def _run_weekly(args) -> None:
+    _validate_month(args.month)
+    samples = usagelog.load_samples(args.log)
+    if not samples:
+        sys.exit(f"[提醒] 記錄檔沒有資料：{args.log}")
+    if args.account:
+        try:
+            samples = _filter_account(samples, args.account)
+        except AccountSelectionError as e:
+            sys.exit(f"[錯誤] {e}")
+    month = None if args.all else (args.month or datetime.now().strftime("%Y-%m"))
+    rows = [r for r in usagelog.weekly_rows(samples, datetime.now(timezone.utc))
+            if weekly_mod.in_month(r, month)]
+    if not rows:
+        sys.exit("[提醒] 指定範圍內沒有任何週期資料。")
+    scope = month or "all"
+    if args.account:
+        scope += f"_{_short(rows[0].uuid)}"
+    print(f"記錄檔：{args.log}\n")
+    weekly_mod.run(rows, out_dir=args.out, scope=scope, no_chart=args.no_chart)
+
+
 def main(argv=None) -> None:
     args = build_parser().parse_args(argv)
+
+    if args.command == "weekly":
+        _run_weekly(args)
+        return
 
     if args.command == "accounts":
         _run_accounts(args.db)

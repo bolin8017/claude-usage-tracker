@@ -1,6 +1,6 @@
 """帳號時間軸：讀 ~/.claumon/account-timeline.jsonl，換算各帳號的用量時間區間。
 
-時間軸由 watchdog 心跳的 claumon-account-track.ps1 追加，只在換帳號時寫入一筆。
+時間軸由舊版 watchdog 的 claumon-account-track.ps1 追加（已移除），只供讀取舊 claumon 資料。
 本模組純讀取、無副作用；now 由呼叫端傳入以利測試。
 """
 from __future__ import annotations

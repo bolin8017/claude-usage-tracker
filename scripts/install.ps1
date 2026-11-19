@@ -5,10 +5,9 @@
 .DESCRIPTION
     依序處理：
       1. 安裝 Claude Code CLI（官方安裝指令 irm https://claude.ai/install.ps1 | iex）
-      2. 下載 claumon binary、加入 PATH
-      3. 將 claumon 設為背景常駐（排程任務 watchdog：開機啟動＋每 3 分鐘自動重啟；每 2 分鐘記錄用量），
-         並安裝 token 自動續期腳本，讓 watchdog 每次心跳時在 Claude OAuth token 快過期時自動刷新
-         （解決 Claude Code 閒置後 token 過期、claumon 額度儀表變空的問題）
+      2. 移除舊的 claumon 背景常駐（保留 ~/.claumon 歷史資料）
+      3. 註冊排程 ClaudeUsageLogger：登入時與每小時各打一次額度 API，追加一行到
+         ~/.claude-usage/usage-log.jsonl（token 快過期時順便續期）
       4. 安裝本工具 claude-usage-tracker（pip install -e .）
 
     無法自動化的步驟：`claude` 登入為瀏覽器互動授權，需由使用者本人完成；
@@ -17,24 +16,32 @@
 .PARAMETER SkipClaudeCode
     略過 Claude Code CLI 安裝。
 
-.PARAMETER SkipClaumon
-    略過 claumon 下載與服務安裝。
+.PARAMETER SwapProfile
+    使用 claude-account-swap 時，要記錄的帳號 profile 名稱（例如 louis）。
+    不論當下切到哪個帳號，都只記錄這個帳號。沒用 claude-swap 就不用給。
+
+.PARAMETER SkipLogger
+    略過用量記錄排程。
 
 .PARAMETER SkipTool
     略過本工具（pip install -e .）安裝。
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+    powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -SwapProfile louis
 #>
 [CmdletBinding()]
 param(
     [switch]$SkipClaudeCode,
-    [switch]$SkipClaumon,
+    [ValidatePattern('^[A-Za-z0-9_-]*$')]
+    [string]$SwapProfile = '',
+    [switch]$SkipLogger,
     [switch]$SkipTool
 )
 
 $ErrorActionPreference = "Stop"
-$claumonBgOk = $false   # 背景常駐排程是否註冊成功（完成提示會據此如實顯示）
+$loggerOk   = $false     # 記錄排程是否註冊成功（完成提示會據此如實顯示）
+$loggerTask = "ClaudeUsageLogger"
+$loggerDir  = "$env:LOCALAPPDATA\Programs\claude-usage-logger"
 
 function Write-Step($n, $msg) { Write-Host "`n=== [$n] $msg ===" -ForegroundColor Cyan }
 function Test-Cmd($name) { [bool](Get-Command $name -ErrorAction SilentlyContinue) }
@@ -67,124 +74,71 @@ if (-not $SkipClaudeCode) {
     }
 } else { Write-Step 1 "略過 Claude Code CLI" }
 
-# 2. claumon binary ----------------------------------------------------------
-if (-not $SkipClaumon) {
-    Write-Step 2 "下載 claumon binary"
-    $dir = "$env:LOCALAPPDATA\Programs\claumon"
-    $exe = "$dir\claumon.exe"
-    $taskName = "ClaumonWatchdog"
-    New-Item -ItemType Directory -Force $dir | Out-Null
-    # 重跑安裝時 watchdog 可能已把 claumon 拉起：先停排程(避免下載途中又被重啟並鎖住 binary)，再結束程序
-    Disable-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Out-Null
+# 2. 讓舊的 claumon 退役 ---------------------------------------------------------
+# claumon 常駐監看 ~/.claude 並每 2 分鐘打一次 API；改用下方每小時的記錄排程後就不需要它。
+# 只移除程式與排程，~/.claumon 的歷史資料保留（舊的 chart / export 指令仍可讀）。
+Write-Step 2 "移除舊的 claumon 背景常駐（保留 ~/.claumon 歷史資料）"
+$claumonDir = "$env:LOCALAPPDATA\Programs\claumon"
+if ((Get-ScheduledTask -TaskName "ClaumonWatchdog" -ErrorAction SilentlyContinue) -or (Test-Path $claumonDir)) {
+    Unregister-ScheduledTask -TaskName "ClaumonWatchdog" -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path ([Environment]::GetFolderPath('Startup')) 'claumon.vbs') -Force -ErrorAction SilentlyContinue
     Stop-Process -Name claumon -Force -ErrorAction SilentlyContinue
-    # 下載到暫存檔，確認完整(非空、夠大)後才覆蓋，避免中途失敗留下半截/損毀的 claumon.exe
-    $url = "https://github.com/fabioconcina/claumon/releases/latest/download/claumon-windows-amd64.exe"
-    $tmp = "$exe.download"
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $tmp
-        if ((Get-Item $tmp).Length -lt 1MB) { throw "下載檔案過小（$((Get-Item $tmp).Length) bytes），可能不完整" }
-        Unblock-File $tmp
-        Move-Item -Force $tmp $exe
-        Write-Host "claumon binary 已更新：$exe"
-    } catch {
-        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-        if (Test-Path $exe) {
-            Write-Warning "下載失敗（$($_.Exception.Message)），沿用現有 binary：$exe"
-        } else { throw }
-    }
+    Remove-Item -Recurse -Force $claumonDir -ErrorAction SilentlyContinue
     $p = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($p -notlike "*$dir*") {
-        [Environment]::SetEnvironmentVariable('Path', "$p;$dir", 'User')
-        Write-Host "已加入使用者 PATH：$dir"
+    if ($p) {
+        $new = ($p -split ';' | Where-Object { $_ -and ($_.TrimEnd('\') -ne $claumonDir) }) -join ';'
+        if ($new -ne $p) { [Environment]::SetEnvironmentVariable('Path', $new, 'User') }
     }
-
-    Write-Step 3 "設定 claumon 背景常駐（開機啟動 + 自動重啟）"
-    # claumon 官方 service 只是把 claumon.vbs 放進 Startup：僅登入時啟動，被殺掉不會自己回來，
-    # 且 `service status` 會把「已安裝」誤報成 running。改用排程任務 watchdog：
-    #   - 登入即啟動、背景隱藏執行
-    #   - 每 3 分鐘檢查，claumon 不在跑就自動拉回（防誤關）
-    #   - 全程免系統管理員
-    # 先移除官方 Startup(vbs)，避免與 watchdog 雙重啟動搶 3131 埠
-    try { & $exe service uninstall | Out-Null } catch {}
-
-    # 一併安裝 token 自動續期腳本，放在 watchdog 旁邊供每次心跳呼叫。
-    # claumon 自己不會續期 Claude OAuth token；沒有它，Claude Code 一閒置 token 就過期、
-    # 額度儀表變空。有了它，watchdog 每 3 分鐘會在 token 快過期時自動刷新。
-    $refreshSrc = Join-Path $PSScriptRoot 'claumon-token-refresh.ps1'
-    $refreshDst = "$dir\claumon-token-refresh.ps1"
-    if (Test-Path $refreshSrc) {
-        Copy-Item -Force $refreshSrc $refreshDst
-        Write-Host "已安裝 token 自動續期腳本：$refreshDst"
-    } else {
-        Write-Warning "找不到 claumon-token-refresh.ps1，略過自動續期（token 仍需靠 Claude Code 自行維持）。"
-    }
-
-    # 一併安裝帳號偵測腳本，供每次心跳偵測換帳號、寫入 account-timeline.jsonl。
-    $acctSrc = Join-Path $PSScriptRoot 'claumon-account-track.ps1'
-    $acctDst = "$dir\claumon-account-track.ps1"
-    if (Test-Path $acctSrc) {
-        Copy-Item -Force $acctSrc $acctDst
-        Write-Host "已安裝帳號偵測腳本：$acctDst"
-    } else {
-        Write-Warning "找不到 claumon-account-track.ps1，略過帳號偵測（多帳號分流將無資料）。"
-    }
-
-    # 寫入 watchdog 腳本（純英文，避免編碼問題）：claumon 不在跑就隱藏重啟，並順手續期 token
-    $watchdog = "$dir\claumon-watchdog.ps1"
-    @'
-# claumon watchdog - keep claumon alive + keep Claude OAuth token fresh.
-# Generated by claude-usage-tracker install.ps1.
-$exe = Join-Path $PSScriptRoot 'claumon.exe'
-if (-not (Get-Process -Name claumon -ErrorAction SilentlyContinue)) {
-    if (Test-Path $exe) { Start-Process -FilePath $exe -WindowStyle Hidden }
+    Write-Host "已移除 claumon 程式與排程。"
+} else {
+    Write-Host "沒有安裝 claumon，略過。"
 }
-# Refresh the Claude Code OAuth token when it is near expiry so claumon's usage gauges
-# never go stale (claumon cannot refresh on its own). Best-effort; never throws.
-$refresh = Join-Path $PSScriptRoot 'claumon-token-refresh.ps1'
-if (Test-Path $refresh) { try { & $refresh } catch {} }
-# Detect Claude account switches so claude-usage can split usage per account.
-$acct = Join-Path $PSScriptRoot 'claumon-account-track.ps1'
-if (Test-Path $acct) { try { & $acct } catch {} }
-'@ | Set-Content -Path $watchdog -Encoding UTF8
 
-    # 以 VBS 包一層：排程若直接起 powershell.exe，每次都會閃一下 conhost 視窗
-    # （-WindowStyle Hidden 是啟動「後」才隱藏）。改由 wscript(GUI、無主控台) 以視窗
-    # 模式 0 啟動 powershell → 完全不閃窗。
-    $vbs = "$dir\claumon-watchdog.vbs"
-    @'
-' Launch the claumon watchdog fully hidden (no console window flash).
+# 3. 每小時用量記錄 ------------------------------------------------------------
+if (-not $SkipLogger) {
+    Write-Step 3 "安裝每小時用量記錄排程（$loggerTask）"
+    $credMarker = Join-Path $env:USERPROFILE '.claude\.credential-owner'
+    if (-not $SwapProfile -and (Test-Path $credMarker)) {
+        Write-Warning "偵測到 claude-swap 多帳號設定，但沒有指定 -SwapProfile：切換帳號後會改記錄當下登入的帳號。"
+    }
+    New-Item -ItemType Directory -Force $loggerDir | Out-Null
+    foreach ($f in 'usage-logger.ps1', 'token-refresh.ps1') {
+        Copy-Item -Force (Join-Path $PSScriptRoot $f) (Join-Path $loggerDir $f)
+    }
+
+    # 以 VBS 包一層：排程直接起 powershell.exe 會閃一下主控台視窗；
+    # 由 wscript（無主控台）以視窗模式 0 啟動就完全不閃窗。
+    $profileArg = if ($SwapProfile) { " -SwapProfile $SwapProfile" } else { "" }
+    $vbs = Join-Path $loggerDir 'usage-logger.vbs'
+    @"
+' Run the hourly Claude usage logger fully hidden (no console window flash).
 Dim fso, ps1
 Set fso = CreateObject("Scripting.FileSystemObject")
-ps1 = fso.BuildPath(fso.GetParentFolderName(WScript.ScriptFullName), "claumon-watchdog.ps1")
+ps1 = fso.BuildPath(fso.GetParentFolderName(WScript.ScriptFullName), "usage-logger.ps1")
 CreateObject("WScript.Shell").Run _
-  "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File """ & ps1 & """", 0, False
-'@ | Set-Content -Path $vbs -Encoding ASCII
+  "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File """ & ps1 & """$profileArg", 0, False
+"@ | Set-Content -Path $vbs -Encoding ASCII
 
-    # 註冊/更新排程任務（idempotent；-Force 覆寫既有）
-    # 用目前登入身分的完整名稱：在 Entra/AzureAD 加入的機器會是 AzureAD\user，
-    # 直接拼 "$env:USERDOMAIN\$env:USERNAME" 會解析失敗導致 Register-ScheduledTask 丟例外。
+    # 用目前登入身分的完整名稱：Entra/AzureAD 機器上是 AzureAD\user，自己拼會解析失敗。
     $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //Nologo `"$vbs`""
     $trigLogon = New-ScheduledTaskTrigger -AtLogOn -User $me
     $trigTick  = New-ScheduledTaskTrigger -Once -At (Get-Date) `
-        -RepetitionInterval (New-TimeSpan -Minutes 3) -RepetitionDuration (New-TimeSpan -Days 3650)
+        -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650)
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
     $principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Limited
     try {
-        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigLogon, $trigTick `
+        Register-ScheduledTask -TaskName $loggerTask -Action $action -Trigger $trigLogon, $trigTick `
             -Settings $settings -Principal $principal `
-            -Description "Keep claumon running: start at logon + auto-restart every 3 min (no admin)." -Force | Out-Null
-        $claumonBgOk = $true
-        Write-Host "已建立背景常駐排程：$taskName（登入啟動 + 每 3 分鐘自動重啟）"
+            -Description "Log Claude weekly usage once an hour and at logon (no admin)." -Force | Out-Null
+        $loggerOk = $true
+        Start-ScheduledTask -TaskName $loggerTask -ErrorAction SilentlyContinue
+        Write-Host "已建立排程：$loggerTask（登入時與每小時各記錄一次）"
     } catch {
-        Write-Warning "排程任務註冊失敗（claumon 不會開機自動啟動/自動重啟）：$($_.Exception.Message)"
+        Write-Warning "排程註冊失敗（可能被群組原則封鎖）：$($_.Exception.Message)"
     }
-
-    # 立即啟動一次，不必等到下次心跳/登入（失敗不致中止安裝）
-    try { Start-ScheduledTask -TaskName $taskName -ErrorAction Stop }
-    catch { Start-Process -FilePath $exe -WindowStyle Hidden -ErrorAction SilentlyContinue }
-} else { Write-Step 2 "略過 claumon" }
+} else { Write-Step 3 "略過用量記錄排程" }
 
 # 4. 本工具 ------------------------------------------------------------------
 if (-not $SkipTool) {
@@ -223,42 +177,32 @@ if (-not $SkipTool) {
 } else { Write-Step 4 "略過本工具" }
 
 # 完成提示 -------------------------------------------------------------------
-if ($SkipClaumon) {
-    $bgSection = "  背景常駐：本次以 -SkipClaumon 略過 claumon。"
-} elseif ($claumonBgOk) {
+if ($SkipLogger) {
+    $bgSection = "  用量記錄：本次以 -SkipLogger 略過。"
+} elseif ($loggerOk) {
     $bgSection = @"
-  背景常駐（已設定，免系統管理員）：
-     claumon 由排程任務 ClaumonWatchdog 看守 —— 登入即啟動、背景隱藏，被關掉最多 3 分鐘自動拉回。
-     同一心跳也會自動續期 Claude OAuth token（快過期才動作），額度儀表不再因閒置而斷線。
-     確認運行：Get-Process claumon              # 或直接開 http://localhost:3131
-     續期紀錄：Get-Content "$env:LOCALAPPDATA\Programs\claumon\claumon-token-refresh.log" -Tail 20
-     想停用：  Unregister-ScheduledTask -TaskName ClaumonWatchdog -Confirm:`$false
+  用量記錄（已設定，免系統管理員）：
+     排程 $loggerTask 在登入時與每小時各記錄一次，寫入 ~/.claude-usage/usage-log.jsonl。
+     執行紀錄：Get-Content "$loggerDir\usage-logger.log" -Tail 20
+     想停用：  Unregister-ScheduledTask -TaskName $loggerTask -Confirm:`$false
 "@
 } else {
     $bgSection = @"
-  背景常駐（！未設定成功，請留意）：
-     排程任務 ClaumonWatchdog 未建立（可能被群組原則封鎖或權限不足），claumon 不會開機自動啟動或自動重啟。
-     可重跑本腳本；或每次登入後手動啟動：Start-Process claumon -WindowStyle Hidden
+  用量記錄（！未設定成功，請留意）：
+     排程 $loggerTask 未建立（可能被群組原則封鎖或權限不足），不會自動記錄；可重跑本腳本。
 "@
 }
 
 Write-Host "`n----------------------------------------------------------" -ForegroundColor Green
-Write-Host "安裝流程完成。還有一個手動步驟：" -ForegroundColor Green
+Write-Host "安裝流程完成。" -ForegroundColor Green
 Write-Host @"
 
-  >> 登入 Claude（額度儀表才有資料，需瀏覽器授權）：
-
-     claude
-
-     首次啟動依指示完成登入後，claumon 最多 2 分鐘內會開始抓額度。
-     要立即生效：Stop-Process -Name claumon -Force -ErrorAction SilentlyContinue; Start-Process claumon -WindowStyle Hidden
+  >> 還沒登入 Claude 的話，先執行 claude 依指示在瀏覽器完成登入，記錄才會有資料。
 
 $bgSection
 
-  之後查看與匯出：
-     開啟 http://localhost:3131            # claumon dashboard
-     claude-usage chart --days 7           # 一週用量曲線
-     claude-usage export --month 2026-06   # 月度彙整 CSV
+  每月報表：
+     claude-usage weekly --month 2026-11   # 該月每週用量 CSV + 長條圖
 
-  注意：新開的終端機才會讓 claude / claumon / claude-usage 指令在 PATH 生效。
+  注意：新開的終端機才會讓 claude / claude-usage 指令在 PATH 生效。
 "@ -ForegroundColor Gray
