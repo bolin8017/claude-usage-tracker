@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "claude-usage-tracker"
 version = "0.1.0"
-description = "Export and visualize Claude (Pro/Max) usage from a claumon SQLite database."
+description = "Log Claude (Pro/Max) weekly usage hourly and build weekly reports."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

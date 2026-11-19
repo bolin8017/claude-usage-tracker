@@ -1,34 +1,33 @@
 ﻿<#
 .SYNOPSIS
-    停止並移除 claumon 背景常駐 / 解除安裝 claumon 與本工具（保留 Claude Code CLI）。
+    停止並移除每小時用量記錄排程與舊的 claumon / 解除安裝本工具（保留 Claude Code CLI）。
 
 .DESCRIPTION
     預設會依序處理：
-      1. 停止 claumon 背景常駐（移除 watchdog 排程、開機啟動、結束程序）
-      2. 刪除 claumon binary 與 watchdog 腳本、從使用者 PATH 移除
+      1. 移除用量記錄排程 ClaudeUsageLogger，以及舊 claumon 的 watchdog 排程、開機啟動、程序
+      2. 刪除記錄腳本與 claumon 程式資料夾、從使用者 PATH 移除 claumon
       3. pip uninstall 本工具 claude-usage-tracker
-      （4. 加 -PurgeData 才會刪除 ~/.claumon 歷史資料）
+      （4. 加 -PurgeData 才會刪除 ~/.claude-usage 用量記錄與 ~/.claumon 歷史資料）
 
     刻意不會執行 claumon.exe（在被防毒封鎖的機器上執行會再次觸發偵測），
     也不會更動 Claude Code CLI。全程不需系統管理員權限。
 
 .PARAMETER StopOnly
-    只停止背景常駐（移除 watchdog 排程 / 開機啟動、結束程序），保留已安裝的檔案與資料。
-    適合「只想停掉一直跳的防毒封鎖通知」但暫時不想移除的情況。
+    只移除排程與開機啟動、結束 claumon 程序，保留已安裝的檔案與資料。
 
 .PARAMETER SkipTool
     不要 pip uninstall claude-usage-tracker。
 
 .PARAMETER PurgeData
-    連同 ~/.claumon 歷史資料庫一併刪除（預設保留）。
+    連同 ~/.claude-usage 用量記錄與 ~/.claumon 歷史資料庫一併刪除（預設保留）。
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
-    完整移除 claumon 與本工具（保留歷史資料與 Claude Code）。
+    完整移除記錄排程、claumon 與本工具（保留資料與 Claude Code）。
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1 -StopOnly
-    只停掉背景常駐與通知，不移除任何檔案。
+    只停掉排程，不移除任何檔案。
 #>
 [CmdletBinding()]
 param(
@@ -44,9 +43,14 @@ $dir        = "$env:LOCALAPPDATA\Programs\claumon"
 $taskName   = "ClaumonWatchdog"
 $startupVbs = Join-Path ([Environment]::GetFolderPath('Startup')) 'claumon.vbs'
 $claumonData = "$env:USERPROFILE\.claumon"
+$loggerTask  = "ClaudeUsageLogger"
+$loggerDir   = "$env:LOCALAPPDATA\Programs\claude-usage-logger"
+$usageData   = "$env:USERPROFILE\.claude-usage"
 
 # 1. 停止背景常駐（不執行 claumon.exe）----------------------------------------
-Write-Step 1 "停止 claumon 背景常駐"
+Write-Step 1 "停止用量記錄排程與 claumon 背景常駐"
+Unregister-ScheduledTask -TaskName $loggerTask -Confirm:$false -ErrorAction SilentlyContinue
+Write-Host "已移除排程：$loggerTask（若原本就沒有則略過）"
 # watchdog 排程（每 3 分鐘重試、一直跳封鎖通知的元兇）
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 Write-Host "已移除排程：$taskName（若原本就沒有則略過）"
@@ -63,7 +67,11 @@ if ($StopOnly) {
 }
 
 # 2. 移除 claumon binary 與 watchdog 腳本 -------------------------------------
-Write-Step 2 "移除 claumon 檔案與 PATH"
+Write-Step 2 "移除記錄腳本、claumon 檔案與 PATH"
+if (Test-Path $loggerDir) {
+    Remove-Item -Recurse -Force $loggerDir -ErrorAction SilentlyContinue
+    Write-Host "已刪除資料夾：$loggerDir"
+}
 if (Test-Path $dir) {
     Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
     Write-Host "已刪除資料夾：$dir"
@@ -93,14 +101,14 @@ if (-not $SkipTool) {
 
 # 4. 歷史資料 ----------------------------------------------------------------
 if ($PurgeData) {
-    Write-Step 4 "刪除歷史資料 ~/.claumon"
-    Remove-Item -Recurse -Force $claumonData -ErrorAction SilentlyContinue
-    Write-Host "已刪除：$claumonData"
+    Write-Step 4 "刪除用量記錄與歷史資料"
+    Remove-Item -Recurse -Force $usageData, $claumonData -ErrorAction SilentlyContinue
+    Write-Host "已刪除：$usageData、$claumonData"
 } else {
-    Write-Host "`n保留歷史資料：$claumonData（要一併刪除請加 -PurgeData）" -ForegroundColor Gray
+    Write-Host "`n保留資料：$usageData、$claumonData（要一併刪除請加 -PurgeData）" -ForegroundColor Gray
 }
 
 # 完成 -----------------------------------------------------------------------
 Write-Host "`n----------------------------------------------------------" -ForegroundColor Green
-Write-Host "claumon 與本工具已移除。Claude Code CLI 未更動。" -ForegroundColor Green
+Write-Host "記錄排程、claumon 與本工具已移除。Claude Code CLI 未更動。" -ForegroundColor Green
 Write-Host "注意：PATH 變更需重開終端機才會生效。" -ForegroundColor Gray

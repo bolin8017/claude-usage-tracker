@@ -1,11 +1,11 @@
 ﻿<#
 .SYNOPSIS
-    讓 Claude Code 的 OAuth access token 保持新鮮，使 claumon 的額度儀表不會斷線。
+    讓 Claude Code 的 OAuth access token 保持有效，使每小時的用量記錄不會因 token 過期而中斷。
 
 .DESCRIPTION
-    claumon 會讀 ~/.claude/.credentials.json 去打訂閱用量 API，但它自己「不會」續期，
+    usage-logger.ps1 讀憑證檔去打訂閱用量 API，本身不會續期，
     完全依賴 Claude Code 幫忙刷新 token。當 Claude Code 沒在跑（例如整晚閒置），約 8 小時
-    的 access token 過期後，claumon 的額度儀表就會變空，直到你下次手動 `claude` 登入。
+    的 access token 過期後，記錄就會失敗，直到你下次手動 `claude` 登入。
 
     本腳本用 Claude Code 標準的 OAuth refresh grant 續期，但「只在 token 快過期或已過期時」
     才動作（緩衝 $BufferSeconds 秒）。因為 Claude Code daemon 會在過期前約 4 分鐘就主動續期，
@@ -17,7 +17,7 @@
       * 每次執行都「即時讀檔」，永不快取 token，確保拿到的是最新（可能剛被輪替過）的 refresh token。
       * 寫回前再讀一次檔：若 HTTP 期間 Claude Code 剛好也續期了，就保留它的、不覆蓋。
       * 原子寫入（先寫暫存檔再 Move），中途失敗也不會弄壞 .credentials.json。
-      * 全程 best-effort：任何錯誤只記 log、不丟例外，不影響 watchdog 其餘工作。
+      * 全程 best-effort：任何錯誤只記 log、不丟例外，不影響記錄腳本其餘工作。
 
 .PARAMETER BufferSeconds
     距離過期還剩多少秒（含已過期）時才續期。預設 120。務必小於 Claude Code daemon 的主動續期
@@ -37,7 +37,7 @@ $ErrorActionPreference = 'Stop'
 # Claude Code 公開 OAuth client 與續期端點（以假 token 實測：api 端點回 invalid_grant，為正解）。
 $TokenUrl = 'https://api.anthropic.com/v1/oauth/token'
 $ClientId = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
-$LogFile  = Join-Path $PSScriptRoot 'claumon-token-refresh.log'
+$LogFile  = Join-Path $PSScriptRoot 'token-refresh.log'
 
 function Write-Log($msg) {
     $line = '[{0:yyyy-MM-ddTHH:mm:ssZ}] {1}' -f (Get-Date).ToUniversalTime(), $msg

@@ -5,6 +5,20 @@
 
 ## [Unreleased]
 
+### Changed
+- 改用每小時一次的排程 `ClaudeUsageLogger`（`scripts/usage-logger.ps1`）取代常駐的 claumon：
+  不再監看 `~/.claude`，每次只讀一個憑證檔、打用量與帳號兩支 API，追加一行到
+  `~/.claude-usage/usage-log.jsonl`（保存原始回應）。`install.ps1` 會移除舊的 claumon 程式與排程，
+  `~/.claumon` 資料保留。
+- `install.ps1` 新增 `-SwapProfile`：搭配 claude-swap 時，不管當下登入哪個帳號，都只記錄指定帳號。
+- `claumon-token-refresh.ps1` 改名為 `token-refresh.ps1`，由記錄腳本在每次記錄前呼叫。
+
+### Added
+- `claude-usage weekly`：依帳號與週期彙整 weekly 使用率，輸出 CSV 與長條圖，標出取樣不足、可能偏低的週期。
+
+### Removed
+- `claumon-account-track.ps1` 與 `docs/setup-guide.md`（claumon 部署指南）。
+
 ### Added
 - Claude OAuth token 自動續期：新增 `scripts/claumon-token-refresh.ps1`，由 watchdog 每 3 分鐘
   心跳時在 token 快過期（預設剩 ≤120 秒）時自動刷新並寫回 `~/.claude/.credentials.json`。

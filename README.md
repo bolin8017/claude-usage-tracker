@@ -1,171 +1,124 @@
 # claude-usage-tracker
 
-從 [claumon](https://github.com/fabioconcina/claumon) 的本機 SQLite 資料庫，匯出 Claude（Pro/Max 訂閱）用量資料並繪製趨勢曲線。
-
-claumon 會在背景持續記錄你的額度使用率（session / weekly）與 Claude Code 的 token / 成本；本工具負責把這些資料**匯出成 CSV** 並**畫成曲線圖**，方便每週 / 每月彙整與長期追蹤。
+每小時記錄一次 Claude（Pro/Max 訂閱）帳號的 weekly 額度使用率（本週用量占每週額度的百分比），並整理成每週報表（CSV 與長條圖），方便附在月報裡。
 
 ```
-claumon (背景常駐, 每 2 分鐘採樣)  ──►  ~/.claumon/usage.db  ──►  claude-usage-tracker  ──►  CSV + PNG
+排程 ClaudeUsageLogger（登入時與每小時各一次）
+  └─ usage-logger.ps1 ── 額度 API ──► ~/.claude-usage/usage-log.jsonl ──► claude-usage weekly ──► CSV + PNG
 ```
 
 ---
 
 ## 特色
 
-- **零干擾**：以唯讀模式讀取資料庫，不影響正在運行的 claumon。
-- **彈性區間**：最近 N 天 / 指定月份 / 全部。
-- **序列自選**：`session`、`weekly`、`sonnet` 任意組合（例如月視圖只看 weekly）。
-- **輸出時降採樣**：原始 2 分鐘資料可聚合成每小時 / 每天一點，長區間圖也清晰；不更動原始資料。
-- **正確性細節**：偵測資料缺口（關機）自動斷線、峰值標註、峰值/平均統計。
-- **純標準函式庫 + matplotlib**，跨平台。
+- **輕量**：沒有常駐程式，也不掃描 `~/.claude` 資料夾。排程每小時啟動一次，讀一個憑證檔、打兩支 API（用量與帳號資訊），寫一行紀錄就結束。
+- **涵蓋全部用量**：額度 API 回傳的是帳號層級的數字，不只本機的 Claude Code，在其他電腦或在 Claude 對話（Chats）的用量也都算在內。報表會用 API 提供的分類（Claude Code、Chats、Cowork、Other）列出各自占多少。
+- **依帳號分開**：每筆紀錄都帶帳號 uuid 與 email，報表依帳號分列。
+- **支援 claude-swap**：指定 `-SwapProfile` 後，不管當下切到哪個帳號，都只記錄指定的那個帳號。
+- **保留原始回應**：每筆紀錄都保存 API 的完整回應，日後 API 改了欄位名稱，舊資料仍能重新解析。
 
 ---
 
-## 安裝
+## 安裝（Windows）
 
-需求：Python 3.9+。
-
-### Windows 一鍵安裝（推薦）
-
-連同 Claude Code CLI、claumon 背景常駐（開機啟動＋自動重啟）、本工具一次裝好：
+需求：Python 3.9+，以及已經登入過的 Claude Code CLI（記錄程式會讀它的憑證檔）。全程不需系統管理員權限。
 
 ```powershell
+# 用 claude-swap 切換多個帳號時，指定要記錄的 profile
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -SwapProfile louis
+
+# 只有一個帳號就不用給參數
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
-腳本會自動完成安裝；唯一需手動的是 `claude` 登入（瀏覽器授權），腳本結束時會提示。詳見 [`docs/setup-guide.md`](docs/setup-guide.md)。
+安裝腳本會依序：
 
-安裝時還會一併部署 **Claude OAuth token 自動續期**，讓額度儀表不會因 Claude Code 閒置而斷線 —— 詳見下方[額度儀表為什麼會斷線](#額度儀表為什麼會斷線自動續期)。
+1. 沒裝 Claude Code CLI 的話，用官方指令安裝（加 `-SkipClaudeCode` 可略過）。
+2. 如果裝過舊版的 claumon，就移除它的程式與排程；`~/.claumon` 的歷史資料會保留。
+3. 把記錄腳本複製到 `%LOCALAPPDATA%\Programs\claude-usage-logger\`，並註冊排程 `ClaudeUsageLogger`（加 `-SkipLogger` 可略過）。
+4. `pip install -e .` 安裝本工具，之後就能用 `claude-usage` 指令（加 `-SkipTool` 可略過）。
 
-### 只安裝本工具
+確認排程有在跑：
 
-```bash
-# 於專案根目錄
-pip install -e .
+```powershell
+Get-ScheduledTaskInfo ClaudeUsageLogger | Select LastRunTime, LastTaskResult, NextRunTime
+Get-Content "$env:USERPROFILE\.claude-usage\usage-log.jsonl" -Tail 1
 ```
-
-安裝後可使用 `claude-usage` 指令。若不想安裝，也可直接用模組方式執行：
-
-```bash
-python -m claude_usage_tracker chart --days 7
-```
-
-> 本工具讀取 claumon 產生的資料庫。請先依 [`docs/setup-guide.md`](docs/setup-guide.md) 安裝並啟動 claumon（或使用上方一鍵腳本）。
 
 ### 移除
 
 ```powershell
-# 移除 claumon 與本工具（保留 Claude Code）
 powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
-#   -StopOnly   只停掉背景常駐與一直跳的通知，不移除檔案
-#   -PurgeData  連同 ~/.claumon 歷史資料一併刪除
+#   -StopOnly   只移除排程，不刪檔案
+#   -PurgeData  連同 ~/.claude-usage 用量記錄與 ~/.claumon 舊資料一起刪除
 ```
 
 ---
 
-## 使用
-
-### chart — 時間序列 CSV 與曲線圖
+## 每月報表：weekly
 
 ```bash
-claude-usage chart --days 1                       # 當天，細看 session 鋸齒
-claude-usage chart --days 7 --resample 30         # 一週，每 30 分鐘一點
-claude-usage chart --month 2026-07 --series weekly --resample 1440 --agg max
-                                                  # 整月只看 weekly，每天峰值
-claude-usage chart --all --series session,weekly,sonnet --resample 60
+claude-usage weekly --month 2026-11          # 結束日落在 11 月的每個週期
+claude-usage weekly --all                    # 全部週期
+claude-usage weekly --month 2026-11 --account louis   # 只看某個帳號
 ```
 
 | 參數 | 說明 |
 | --- | --- |
-| `--days N` / `--month YYYY-MM` / `--all` | 時間區間（三選一，預設最近 14 天） |
-| `--series` | `session` / `weekly` / `sonnet`，逗號組合（預設 `session,weekly`） |
-| `--resample <分鐘>` | 輸出時降採樣間隔；`0`（預設）= 原始 2 分鐘密度 |
-| `--agg` | 桶內聚合：`max`（峰值，預設）/ `mean` / `last` |
-| `--no-chart` | 只輸出 CSV，不畫圖 |
+| `--month YYYY-MM` / `--all` | 範圍（預設本月）。週期依「結束日（本地時間）」歸入月份 |
+| `--account` | email、uuid，或兩者的子字串（需唯一） |
 | `--out <資料夾>` | 輸出位置（預設 `./exports`） |
+| `--no-chart` | 只輸出 CSV |
+| `--log <路徑>` | 記錄檔（全域參數，預設 `~/.claude-usage/usage-log.jsonl`） |
 
-輸出檔名含區間與序列，例如 `usage_chart_2026-07_1440m_weekly.png`，不同設定不互相覆蓋。
+輸出 `weekly_<範圍>.csv` 與 `weekly_<範圍>.png`。CSV 一列代表一個帳號的一個週期：
 
-### export — 每月彙整 CSV
-
-```bash
-claude-usage export --month 2026-06
-claude-usage export                  # 全部
-```
-
-產出：
-
-| 檔案 | 內容 |
+| 欄位 | 說明 |
 | --- | --- |
-| `monthly_summary.csv` | 各月 token / 成本 / session 數彙總 |
-| `daily_<scope>.csv` | 每日 token / 成本明細 |
-| `utilization_<scope>.csv` | 各月額度峰值與平均 |
+| `week_start` / `week_end` | 週期起訖（本地時間），以 API 的 `resets_at` 為準 |
+| `weekly_pct` | 該週用掉多少 weekly 額度（%） |
+| `claude_code_pct` 等 | 各使用管道占 weekly 額度的百分比 |
+| `samples` | 該週期的取樣數，滿一週約 168 筆 |
+| `hours_unsampled_before_reset` | 最後一次取樣距週期結束還有幾小時 |
+| `status` | 完整／進行中／可能偏低 |
 
-### 全域參數
+### 為什麼取最大值、什麼時候會「可能偏低」
 
-`--db <路徑>`：指定 `usage.db`（預設 `~/.claumon/usage.db`）。
+同一個帳號的 weekly 使用率在一個週期內只會增加，到重置時才歸零。所以週期內的最大值就是那一週的用量，每小時取樣一次就夠了。
 
----
-
-## 各區間建議設定
-
-| 看的範圍 | 建議 |
-| --- | --- |
-| 一天 | `chart --days 1`（不降採樣） |
-| 一週 | `chart --days 7 --resample 30` |
-| 一個月 | `chart --month YYYY-MM --series weekly --resample 1440 --agg max` |
+如果最後一次取樣距離週期結束超過 2 小時（例如週末關機），後面那段時間的用量就記不到，該週會標成「可能偏低」，並寫出差了幾小時。
 
 ---
 
-## 重要前提
+## 運作細節
 
-- 這台電腦要**開著且 claumon 服務在運行**才會持續記錄；關機期間無資料（圖上會以斷線呈現）。
-- 額度（utilization）為**帳號層級**，反映整個 Claude 訂閱的消耗；token/成本則僅來自**本機 Claude Code session**。
-- 在 Cursor 等其他工具使用 Claude 的量不計入此資料。
+### 記錄哪個帳號
 
-詳見 [`docs/setup-guide.md`](docs/setup-guide.md)。
+- 沒給 `-SwapProfile`：讀 `~/.claude/.credentials.json`，也就是當下登入的帳號。
+- 有給 `-SwapProfile louis`：如果 `~/.claude/.credential-owner` 是 `louis`，代表 louis 正在使用，就讀 `~/.claude`；否則讀 `~/.claude-louis/.credentials.json`。
 
----
+用量和帳號資訊是用同一個 token（登入用的存取憑證）查的，所以紀錄上的帳號一定和數字對得起來。
 
-## 多帳號分流
+### token 續期
 
-若你在同一台機器 `claude` 登入不同帳號，claumon 的**即時**額度儀表會自動切到新帳號
-（它每次都即時讀憑證檔）；但它寫的 `usage.db` **沒有帳號欄位**，歷史會混在一起。
+access token 大約 8 小時就會過期。每次記錄前，`token-refresh.ps1` 會檢查 token：只有在快過期（剩不到 120 秒）或已經過期時，才用 OAuth refresh grant（以 refresh token 換新 access token 的流程）續期並寫回原本的檔案。Claude Code 正在執行時，會在過期前約 4 分鐘自己續期，一定比這支腳本先動手，所以兩邊不會搶著輪替 refresh token。如果電腦關機太久，連 refresh token 都過期了，就需要重新執行一次 `claude` 登入。
 
-本工具透過 watchdog 每 3 分鐘心跳執行的 `claumon-account-track.ps1` 偵測換帳號
-（打 profile API 取穩定的 `account.uuid`），只在換帳號時把邊界追加到
-`~/.claumon/account-timeline.jsonl`。之後即可依帳號檢視：
+### 失敗時
 
-```bash
-claude-usage accounts                              # 列出已知帳號
-claude-usage chart --all --account alice@x.com     # 只看該帳號的用量
-claude-usage export --account alice@x.com          # utilization 依帳號切
-```
+API 回錯誤（包括 429 速率限制）、找不到憑證、或回應格式不對，都只會寫進 `%LOCALAPPDATA%\Programs\claude-usage-logger\usage-logger.log`，然後結束；下一個小時會再試一次。
 
-- `--account` 接受 email、uuid，或 email/顯示名稱的子字串（需唯一）。
-- 未給 `--account` 時行為不變；混帳號的圖會在切換點標出換帳號（`--no-account-markers` 可關）。
-- **注意**：偵測開始前的舊資料視為「未歸屬」，`--account` 不含；邊界精度 ≈ 3 分鐘心跳。
-- export 的 `--account` **只作用於 `utilization_*.csv`**（額度快照）；`monthly_summary.csv` /
-  `daily_*.csv`（token/成本）為日粒度、本機層級，維持全量不切。
+### 注意事項
+
+- 額度 API（`/api/oauth/usage`）是 Claude Code 自己在用的非公開端點，Anthropic 可能會改。紀錄保存了原始回應，欄位解析集中在 `usagelog.py`。
+- 電腦要開著，排程才會執行；關機期間不會有紀錄。
 
 ---
 
-## 額度儀表為什麼會斷線（自動續期）
+## 舊的 claumon 資料
 
-claumon 讀取 `~/.claude/.credentials.json` 去打訂閱用量 API，但它**自己不會續期** token，完全依賴 Claude Code 幫忙刷新。Claude Code 的 access token 約 **8 小時**過期，且其背景 daemon **一閒置就會結束**；因此當你一段時間沒用 Claude Code（例如整晚），token 過期後沒人續期，claumon 的額度儀表就會變空，直到你下次手動 `claude` 登入。
+之前用 claumon 時累積的 `~/.claumon/usage.db`，仍然可以用舊指令查看：`chart`、`export`、`accounts`（`--db` 指定資料庫位置）。
 
-一鍵安裝會部署續期腳本 `claumon-token-refresh.ps1`，由 watchdog **每 3 分鐘心跳時**檢查一次：
-
-- 只在 token **快過期或已過期**（預設剩 ≤120 秒）時才用標準 OAuth refresh grant 刷新，並寫回 `.credentials.json`。
-- 緩衝刻意小於 Claude Code daemon 的主動續期時機（過期前約 4 分鐘），因此 **daemon 活著時一定比腳本先動手**，天然避開 refresh token 一次性輪替造成的衝突（兩邊搶著換，晚換者會失效被登出）。腳本只在沒人維持 token 的空窗才補上。
-- 原子寫入、寫回前再讀一次比對，中途失敗也不會弄壞憑證檔。
-
-```powershell
-# 查看續期紀錄
-Get-Content "$env:LOCALAPPDATA\Programs\claumon\claumon-token-refresh.log" -Tail 20
-```
-
-> 注意：這只解決 access token 續期。若電腦長時間關機導致 **refresh token 本身**過期，仍需手動 `claude` 登入一次。
+claumon 的歷史資料**沒有匯入**新的記錄檔，原因是無法可靠地分出帳號：claumon 實際查詢的帳號，比帳號時間軸晚好幾個小時才切換。例如 11/12 到 11/13 有一條從 0% 連續爬到 70% 的曲線，期間時間軸換了三次帳號，曲線卻完全沒有斷開。依時間軸歸屬會把別的帳號的用量算到你頭上，所以舊資料只適合看整體趨勢，不適合放進個人報表。
 
 ---
 
@@ -173,26 +126,16 @@ Get-Content "$env:LOCALAPPDATA\Programs\claumon\claumon-token-refresh.log" -Tail
 
 ```
 claude-usage-tracker/
-├── README.md
-├── LICENSE
-├── CHANGELOG.md
-├── pyproject.toml
-├── requirements.txt
-├── docs/
-│   └── setup-guide.md          # claumon + Claude Code CLI 部署指南（Windows）
 ├── scripts/
-│   ├── install.ps1             # Windows 一鍵安裝（Claude Code + claumon + 本工具）
-│   ├── uninstall.ps1           # 移除 claumon 與本工具（保留 Claude Code）；-StopOnly 只停背景
-│   ├── claumon-token-refresh.ps1  # Claude OAuth token 自動續期（由 watchdog 每 3 分鐘呼叫）
-│   └── claumon-account-track.ps1   # 換帳號偵測，寫 account-timeline.jsonl（watchdog 每 3 分鐘呼叫）
-└── src/
-    └── claude_usage_tracker/
-        ├── __init__.py
-        ├── __main__.py         # python -m claude_usage_tracker
-        ├── cli.py              # 命令列入口（export / chart 子命令）
-        ├── db.py               # 唯讀資料庫存取（UTC→本地時間）
-        ├── export.py           # 每月彙整 CSV
-        └── chart.py            # 時間序列 CSV 與曲線圖
+│   ├── install.ps1          # 安裝：Claude Code、移除舊 claumon、記錄排程、本工具
+│   ├── uninstall.ps1        # 移除排程與本工具；-StopOnly 只移除排程
+│   ├── usage-logger.ps1     # 每小時記錄一次（排程呼叫）
+│   └── token-refresh.ps1    # token 快過期時續期（記錄前呼叫）
+└── src/claude_usage_tracker/
+    ├── cli.py               # 命令列入口
+    ├── usagelog.py          # 讀記錄檔、解析 API 回應、依帳號與週期彙整
+    ├── weekly.py            # 每週報表 CSV 與長條圖
+    ├── db.py / export.py / chart.py / account.py   # 舊 claumon 資料庫的匯出與圖表
 ```
 
 ---
