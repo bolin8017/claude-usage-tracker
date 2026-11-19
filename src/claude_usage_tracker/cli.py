@@ -1,4 +1,4 @@
-"""命令列介面：claude-usage weekly（每小時記錄），export / chart / accounts（舊 claumon 資料庫）。"""
+"""命令列介面：claude-usage weekly / import-claumon（每小時記錄），export / chart / accounts（舊 claumon 資料庫）。"""
 from __future__ import annotations
 
 import argparse
@@ -81,6 +81,10 @@ def build_parser() -> argparse.ArgumentParser:
     pw.add_argument("--out", default="exports", help="輸出資料夾（預設 ./exports）")
     pw.add_argument("--no-chart", action="store_true", help="只輸出 CSV，不畫圖")
 
+    pi = sub.add_parser("import-claumon",
+                        help="把舊 claumon 資料庫的 weekly 歷史匯入記錄檔（只需執行一次）")
+    pi.add_argument("--account", help="只匯入指定帳號（email、uuid 或其子字串）")
+
 
     pe = sub.add_parser("export", help="匯出每月彙整 CSV（token / 成本 / 額度峰值）")
     pe.add_argument("--out", default="exports", help="輸出資料夾（預設 ./exports）")
@@ -157,11 +161,43 @@ def _run_weekly(args) -> None:
     weekly_mod.run(rows, out_dir=args.out, scope=scope, no_chart=args.no_chart)
 
 
+def _run_import(args) -> None:
+    if usagelog.has_claumon_import(args.log):
+        print(f"記錄檔已含 claumon 匯入資料，略過：{args.log}")
+        return
+    timeline = load_timeline(default_timeline_path())
+    if not timeline:
+        sys.exit("[錯誤] 找不到帳號時間軸 ~/.claumon/account-timeline.jsonl，"
+                 "無法判斷快照屬於哪個帳號。")
+    only = None
+    if args.account:
+        try:
+            only = resolve_account(timeline, args.account)
+        except AccountSelectionError as e:
+            sys.exit(f"[錯誤] {e}")
+    con = connect_ro(args.db)
+    try:
+        records, report = usagelog.claumon_records(con, timeline, only_uuid=only)
+    finally:
+        con.close()
+
+    print(f"{'week_end':<18}{'account':<32}{'share':>6}  snapshots")
+    for w in report:
+        who = (w.owner.email or w.owner.uuid) if w.owner else "（沒有過半數，不匯入）"
+        print(f"{w.window_end.astimezone().strftime('%Y-%m-%d %H:%M'):<18}{who:<32}"
+              f"{w.share:>6.0%}  {w.snapshots}")
+    usagelog.append_records(args.log, records)
+    print(f"\n[OK] 已匯入 {len(records)} 筆到 {args.log}")
+
+
 def main(argv=None) -> None:
     args = build_parser().parse_args(argv)
 
     if args.command == "weekly":
         _run_weekly(args)
+        return
+    if args.command == "import-claumon":
+        _run_import(args)
         return
 
     if args.command == "accounts":

@@ -31,7 +31,8 @@ def gap_hours(row: WeekRow) -> float:
 def write_csv(rows: List[WeekRow], path: str) -> None:
     header = (["account", "week_start", "week_end", "weekly_pct"]
               + [f"{s}_pct" for s in SURFACES]
-              + ["samples", "last_sample", "hours_unsampled_before_reset", "status"])
+              + ["segment_peaks", "samples", "last_sample", "hours_unsampled_before_reset",
+                 "status"])
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(header)
@@ -39,9 +40,9 @@ def write_csv(rows: List[WeekRow], path: str) -> None:
             w.writerow([r.email or r.uuid,
                         _local(r.window_start).strftime("%Y-%m-%d %H:%M"),
                         _local(r.window_end).strftime("%Y-%m-%d %H:%M"),
-                        r.peak_pct]
+                        r.used_pct]
                        + [r.breakdown.get(s, "") for s in SURFACES]
-                       + [r.samples,
+                       + ["+".join(f"{p:g}" for p in r.segment_peaks), r.samples,
                           _local(r.last_sample).strftime("%Y-%m-%d %H:%M"),
                           max(gap_hours(r), 0.0),
                           STATUS_TEXT[r.status]])
@@ -62,7 +63,7 @@ def write_chart(rows: List[WeekRow], path: str, title: str) -> None:
         for x, wk in enumerate(weeks):
             if wk in by_week:
                 xs.append(x - 0.4 + width * (i + 0.5))
-                ys.append(by_week[wk].peak_pct)
+                ys.append(by_week[wk].used_pct)
         bars = ax.bar(xs, ys, width=width * 0.9, label=acct)
         for b, y in zip(bars, ys):
             ax.annotate(f"{y:.0f}%", (b.get_x() + b.get_width() / 2, y),
@@ -71,7 +72,7 @@ def write_chart(rows: List[WeekRow], path: str, title: str) -> None:
     ax.set_xticklabels([_local(w).strftime("%m/%d") for w in weeks])
     ax.set_xlabel("Week ending (local date)")
     ax.set_ylabel("Weekly limit used (%)")
-    ax.set_ylim(0, 110)
+    ax.set_ylim(0, max(110, max(r.used_pct for r in rows) * 1.1))
     ax.set_title(title)
     if len(accounts) > 1:
         ax.legend(fontsize=8)
@@ -86,10 +87,12 @@ def run(rows: List[WeekRow], *, out_dir: str, scope: str, no_chart: bool) -> Non
     print(f"{'account':<30}{'week_end':<18}{'weekly':>7}  {'samples':>7}  status")
     for r in rows:
         note = STATUS_TEXT[r.status]
+        if len(r.segment_peaks) > 1:
+            note += "，週期中途歸零：" + " + ".join(f"{p:g}%" for p in r.segment_peaks)
         if r.status == "incomplete":
             note += f"（最後採樣距重置 {gap_hours(r)} 小時）"
         print(f"{(r.email or r.uuid):<30}{_local(r.window_end).strftime('%Y-%m-%d %H:%M'):<18}"
-              f"{r.peak_pct:>6.0f}%  {r.samples:>7}  {note}")
+              f"{r.used_pct:>6.0f}%  {r.samples:>7}  {note}")
 
     csv_path = os.path.join(out_dir, f"weekly_{scope}.csv")
     write_csv(rows, csv_path)

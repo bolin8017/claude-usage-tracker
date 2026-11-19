@@ -16,6 +16,13 @@
 ### Added
 - `claude-usage weekly`：依帳號與週期彙整 weekly 使用率，輸出 CSV 與長條圖，標出取樣不足、可能偏低的週期。
 
+- `claude-usage import-claumon`：把 claumon 歷史匯入記錄檔。以週期為單位、依帳號時間軸多數決歸屬，
+  避開 claumon 快取 token 造成的帳號切換延遲。
+
+### Fixed
+- 週期中途額度被歸零時，`weekly` 原本只取最大值會少算；改成在下降處切段、各段最大值相加，
+  CSV 新增 `segment_peaks` 欄位。
+
 ### Removed
 - `claumon-account-track.ps1` 與 `docs/setup-guide.md`（claumon 部署指南）。
 
